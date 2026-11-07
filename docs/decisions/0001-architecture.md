@@ -33,4 +33,4 @@ between libraries.
 ## Consequences
 
 - dkman depends on md-zig and gtroff-zig (path dependencies for now).
-- man(7) works; mdoc(7) pages are reported as unsupported until gtroff-zig reads them.
+- man(7) and mdoc(7) both work through gtroff-zig; fidelity is limited to what the shared tree can express.

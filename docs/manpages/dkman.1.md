@@ -16,9 +16,9 @@ from the file name and content, and shows the result through a pager. Pages may
 be gzip compressed. Markdown documents (`NAME.SECTION.md`) are found like any
 other page, so a project can install its own documentation next to the system's.
 
-Classic man(7) pages are read by gtroff-zig and drawn with the same renderer as
-Markdown, so layout is approximate (indents and tables are simplified). mdoc(7)
-pages are recognised but not shown yet: `dkman` reports that and exits with 1.
+Classic man(7) and mdoc(7) pages are read by gtroff-zig and drawn with the same
+renderer as Markdown, so layout is approximate (indents, column widths and tables
+are simplified).
 
 # OPTIONS
 

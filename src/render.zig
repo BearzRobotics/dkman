@@ -12,10 +12,7 @@ pub const Options = struct {
     color: bool = false,
 };
 
-pub const Error = error{
-    /// mdoc(7) pages cannot be read yet.
-    MdocNotSupported,
-} || md.ParseError || Allocator.Error;
+pub const Error = md.ParseError || Allocator.Error;
 
 /// The page as terminal text; the caller owns the result.
 pub fn render(gpa: Allocator, format: Format, content: []const u8, options: Options) Error![]u8 {
@@ -30,7 +27,11 @@ pub fn render(gpa: Allocator, format: Format, content: []const u8, options: Opti
             defer doc.deinit();
             return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
         },
-        .mdoc => return error.MdocNotSupported,
+        .mdoc => {
+            var doc = try gtroff.parseMdoc(gpa, content);
+            defer doc.deinit();
+            return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
+        },
         .plain => return gpa.dupe(u8, content),
     }
 }
@@ -46,5 +47,7 @@ test "markdown and plain pages render" {
     const man = try render(t.allocator, .man, ".TH A 1\n.SH NAME\na \\- thing\n", .{});
     defer t.allocator.free(man);
     try t.expect(std.mem.find(u8, man, "a - thing") != null);
-    try t.expectError(error.MdocNotSupported, render(t.allocator, .mdoc, ".Dd today\n", .{}));
+    const mdoc = try render(t.allocator, .mdoc, ".Dd today\n.Dt A 1\n.Sh NAME\n.Nm a\n.Nd a thing\n", .{});
+    defer t.allocator.free(mdoc);
+    try t.expect(std.mem.find(u8, mdoc, "a \u{2014} a thing") != null);
 }

@@ -5,10 +5,10 @@ them with fzf, and shows them through a pager. Markdown documents
 (`name.1.md`) are first-class pages, read with
 [md-zig](https://github.com/BearzRobotics/md-zig).
 
-Status: Markdown, plain and gzip pages work, and classic man(7) pages are read
-with [gtroff-zig](https://github.com/BearzRobotics/gtroff-zig) (every man1, man3,
-man5 and man8 page on the development machine rendered without a crash).
-mdoc(7) pages are detected but not yet shown.
+Status: Markdown, plain and gzip pages work, and man(7) and mdoc(7) pages are
+read with [gtroff-zig](https://github.com/BearzRobotics/gtroff-zig) (every man1,
+man3, man5 and man8 page on the development machine rendered without a crash).
+Layout is approximate: indents, column widths and tbl tables are simplified.
 
     zig build
     zig-out/bin/dkman -l README.md
