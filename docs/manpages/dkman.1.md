@@ -17,8 +17,11 @@ be gzip compressed. Markdown documents (`NAME.SECTION.md`) are found like any
 other page, so a project can install its own documentation next to the system's.
 
 Classic man(7) and mdoc(7) pages are read by gtroff-zig and drawn with the same
-renderer as Markdown, so layout is approximate (indents, column widths and tables
-are simplified).
+renderer as Markdown. Section bodies are indented like groff's terminal output,
+and tagged paragraphs, lists, tbl tables, user-defined macros and number
+registers are handled. Layout is still approximate (text is not justified and
+tables are drawn as grids). A page that only says `.so man1/other.1` shows the
+page it names.
 
 # OPTIONS
 
@@ -83,6 +86,8 @@ error.
 
 # LIMITATIONS
 
+- Output is checked against groff by comparing the words of a sample of installed
+  pages, not the layout.
 - Search matches page names only; there is no `whatis` database yet.
 - `-f` needs fzf in `PATH`.
 - Without a section, the page is chosen in the order `1 n l 8 3 0 2 5 4 9 6 7`,

@@ -31,6 +31,9 @@ pub fn detect(path: []const u8, content: []const u8) Format {
         if (l.len == 0) continue;
         // Comments and blank macro lines come first in many pages.
         if (std.mem.startsWith(u8, l, ".\\\"") or std.mem.startsWith(u8, l, "'\\\"") or std.mem.startsWith(u8, l, "\\\"") or std.mem.eql(u8, l, ".")) continue;
+        // A line that starts with a backslash is a continuation or an escape
+        // comment (some generators begin a page with a lone `\`).
+        if (l[0] == '\\') continue;
         if (l[0] != '.' and l[0] != '\'') return .plain;
         // Any other macro line means classic man(7)/roff.
         const macro = std.mem.trimStart(u8, l[1..], " \t");
@@ -51,6 +54,7 @@ test "detect by name and content" {
     try t.expectEqual(Format.man, detect("a.1", ".\\\" comment\n.TH A 1\n.SH NAME\n"));
     try t.expectEqual(Format.mdoc, detect("a.1", ".Dd $Mdocdate$\n.Dt A 1\n"));
     try t.expectEqual(Format.mdoc, detect("a.1", ".\\\" c\n.Dd January 1, 2026\n"));
+    try t.expectEqual(Format.man, detect("a.1", "\\\n.\\\" generated\n.TH A 1\n"));
     try t.expectEqual(Format.plain, detect("a.txt", "A NAME\n    text\n"));
     try t.expectEqual(Format.plain, detect("a", ""));
 }

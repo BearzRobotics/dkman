@@ -8,7 +8,8 @@ them with fzf, and shows them through a pager. Markdown documents
 Status: Markdown, plain and gzip pages work, and man(7) and mdoc(7) pages are
 read with [gtroff-zig](https://github.com/BearzRobotics/gtroff-zig) (every man1,
 man3, man5 and man8 page on the development machine rendered without a crash).
-Layout is approximate: indents, column widths and tbl tables are simplified.
+Content matches groff on sampled pages and most lines have the same indent;
+layout is still approximate (text is not justified, tables are drawn as grids).
 
     zig build
     zig-out/bin/dkman -l README.md

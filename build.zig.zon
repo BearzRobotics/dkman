@@ -5,12 +5,12 @@
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .md = .{
-            .url = "https://github.com/BearzRobotics/md-zig/releases/download/v0.1.0/md-0.1.0.tar.gz",
-            .hash = "md-0.1.0-V1LLYbWSBwCfiWtt8dwXOETY1774lER-jDFfmI6rMoTW",
+            .url = "https://github.com/BearzRobotics/md-zig/releases/download/v0.3.0/md-0.3.0.tar.gz",
+            .hash = "md-0.3.0-V1LLYbWqBwDx92Iqx75tuTq1S_5BZ9heA64zPkBdwW4Y",
         },
         .gtroff = .{
-            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.2.1/gtroff-0.2.1.tar.gz",
-            .hash = "gtroff-0.2.1-7kuxtQnsAQDbEZg8IcjWeC_aKWrr879COtGjV0_9cDpI",
+            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.3.0/gtroff-0.3.0.tar.gz",
+            .hash = "gtroff-0.3.0-7kuxtV1_AgCEvxEfBvXlS0tBSX2INKJUzrfKLUUBLdgM",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "test", "LICENSE", "README.md" },
