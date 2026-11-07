@@ -16,5 +16,5 @@ mdoc(7) pages are detected but not yet shown.
     zig-out/bin/dkman -f
 
 See `docs/manpages/dkman.1.md` for the options, `docs/architecture.md` for the
-layout and `docs/decisions/` for the reasoning. Zig 0.17.1. The build expects
-md-zig in `../md-zig` for now. License: MIT.
+layout and `docs/decisions/` for the reasoning. Zig 0.17.1. Dependencies (md-zig, gtroff-zig) are fetched
+by `zig build` from their GitHub releases. License: MIT.

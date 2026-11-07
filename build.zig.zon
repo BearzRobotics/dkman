@@ -4,9 +4,14 @@
     .version = "0.1.0",
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
-        // Local checkout for now; becomes a url + hash once md-zig is fetchable.
-        .md = .{ .path = "../md-zig" },
-        .gtroff = .{ .path = "../gtroff-zig" },
+        .md = .{
+            .url = "https://github.com/BearzRobotics/md-zig/releases/download/v0.1.0/md-0.1.0.tar.gz",
+            .hash = "md-0.1.0-V1LLYbWSBwCfiWtt8dwXOETY1774lER-jDFfmI6rMoTW",
+        },
+        .gtroff = .{
+            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.1.0/gtroff-0.1.0.tar.gz",
+            .hash = "gtroff-0.1.0-7kuxtfAqAQA13F7VUz4987TJXhc_VDndFBTLq30fbRud",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "test", "LICENSE", "README.md" },
 }
