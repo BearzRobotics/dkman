@@ -663,3 +663,93 @@ test "character helpers" {
     try t.expectEqualStrings("h\xc3\xa9", charPrefix("h\xc3\xa9llo", 2));
     try t.expectEqualStrings("abc", charPrefix("abc", 10));
 }
+
+fn testTui(pages: []const paths.Page) !Tui {
+    const hay = try std.testing.allocator.alloc([]u8, pages.len);
+    for (pages, 0..) |p, i| {
+        hay[i] = try std.fmt.allocPrint(std.testing.allocator, "{s}({s})", .{ p.name, p.section });
+    }
+    var t: Tui = .{ .gpa = std.testing.allocator, .io = undefined, .dirs = &.{}, .pages = pages, .color = false, .hay = hay };
+    try t.refilter();
+    return t;
+}
+
+const test_pages = [_]paths.Page{
+    .{ .name = "cat", .section = "1", .path = "/m/man1/cat.1", .dir_index = 0 },
+    .{ .name = "printf", .section = "1", .path = "/m/man1/printf.1", .dir_index = 0 },
+    .{ .name = "printf", .section = "3", .path = "/m/man3/printf.3", .dir_index = 0 },
+};
+
+test "typing filters, backspace and Ctrl-U widen again" {
+    const t = std.testing;
+    var tui = try testTui(&test_pages);
+    defer tui.deinit();
+    try t.expectEqual(@as(usize, 3), tui.hits.items.len);
+
+    try t.expectEqual(Action.none, try tui.handle("prin"));
+    try t.expectEqual(@as(usize, 2), tui.hits.items.len);
+    try t.expectEqual(Action.none, try tui.handle("tf 3"));
+    try t.expectEqual(@as(usize, 1), tui.hits.items.len);
+    try t.expectEqual(@as(u32, 2), tui.current().?);
+
+    _ = try tui.handle("\x7f\x7f");
+    try t.expectEqualStrings("printf", tui.query.items);
+    try t.expectEqual(@as(usize, 2), tui.hits.items.len);
+    _ = try tui.handle("\x15");
+    try t.expectEqual(@as(usize, 3), tui.hits.items.len);
+}
+
+test "arrows move the selection and stay in range" {
+    const t = std.testing;
+    var tui = try testTui(&test_pages);
+    defer tui.deinit();
+    _ = try tui.handle("\x1b[A");
+    try t.expectEqual(@as(usize, 0), tui.sel);
+    _ = try tui.handle("\x1b[B\x1b[B\x1b[B\x1b[B");
+    try t.expectEqual(@as(usize, 2), tui.sel);
+    _ = try tui.handle("\x10"); // Ctrl-P
+    try t.expectEqual(@as(usize, 1), tui.sel);
+    _ = try tui.handle("\x0e"); // Ctrl-N
+    try t.expectEqual(@as(usize, 2), tui.sel);
+}
+
+test "Enter accepts, Esc and Ctrl-C cancel, Enter with no match does nothing" {
+    const t = std.testing;
+    var tui = try testTui(&test_pages);
+    defer tui.deinit();
+    try t.expectEqual(Action.accept, try tui.handle("\r"));
+    try t.expectEqual(Action.cancel, try tui.handle("\x1b"));
+    try t.expectEqual(Action.cancel, try tui.handle("\x03"));
+    _ = try tui.handle("zzz");
+    try t.expectEqual(@as(usize, 0), tui.hits.items.len);
+    try t.expectEqual(Action.none, try tui.handle("\r"));
+}
+
+test "preview scrolling is clamped" {
+    const t = std.testing;
+    var tui = try testTui(&test_pages);
+    defer tui.deinit();
+    tui.size = .{ .rows = 10, .cols = 100 };
+    for (0..30) |_| try tui.preview_lines.append(t.allocator, "line");
+    _ = try tui.handle("\x1b[6~"); // PgDn: rows-2 lines
+    try t.expectEqual(@as(usize, 8), tui.preview_scroll);
+    _ = try tui.handle("\x1b[F");
+    try t.expectEqual(@as(usize, 21), tui.preview_scroll);
+    _ = try tui.handle("\x1b[6~");
+    try t.expectEqual(@as(usize, 21), tui.preview_scroll);
+    _ = try tui.handle("\x1b[1;2A"); // Shift-Up: one line
+    try t.expectEqual(@as(usize, 20), tui.preview_scroll);
+    _ = try tui.handle("\x1b[H");
+    try t.expectEqual(@as(usize, 0), tui.preview_scroll);
+    _ = try tui.handle("\x1b[5~");
+    try t.expectEqual(@as(usize, 0), tui.preview_scroll);
+}
+
+test "a multi-byte character is deleted whole" {
+    const t = std.testing;
+    var tui = try testTui(&test_pages);
+    defer tui.deinit();
+    _ = try tui.handle("a\xc3\xa9");
+    _ = try tui.handle("\x7f");
+    try t.expectEqualStrings("a", tui.query.items);
+}
