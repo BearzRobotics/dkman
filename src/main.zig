@@ -4,8 +4,8 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const paths = @import("paths.zig");
-const format_mod = @import("format.zig");
-const source = @import("source.zig");
+const page_mod = @import("page.zig");
+const tui = @import("tui.zig");
 const render = @import("render.zig");
 const pager = @import("pager.zig");
 const search = @import("search.zig");
@@ -19,7 +19,8 @@ const usage =
     \\  -l FILE      show a file (a path, or - for standard input)
     \\  -w           print the path of the page instead of showing it
     \\  -k WORD      list pages whose name contains WORD
-    \\  -f [WORD]    choose a page with fzf (WORD is the first query)
+    \\  -f [WORD]    browse pages: search on the left, preview on the right
+    \\               (WORD is the first search text)
     \\  --width N    wrap at N columns (default: $COLUMNS or 80)
     \\  --no-color   no ANSI styles (also off when not on a terminal or NO_COLOR is set)
     \\  --no-pager   write to standard output
@@ -27,7 +28,7 @@ const usage =
     \\
 ;
 
-const Mode = enum { show, local, where, keyword, fzf };
+const Mode = enum { show, local, where, keyword, browse };
 
 const Config = struct {
     mode: Mode = .show,
@@ -53,7 +54,7 @@ fn parseArgs(arena: Allocator, args: []const [:0]const u8) (ParseError || Alloca
         } else if (std.mem.eql(u8, a, "-k")) {
             cfg.mode = .keyword;
         } else if (std.mem.eql(u8, a, "-f")) {
-            cfg.mode = .fzf;
+            cfg.mode = .browse;
         } else if (std.mem.eql(u8, a, "--no-color")) {
             cfg.color = false;
         } else if (std.mem.eql(u8, a, "--no-pager")) {
@@ -154,25 +155,32 @@ pub fn main(init: std.process.Init) !u8 {
             try pager.writeStdout(io, menu);
             return 0;
         },
-        .fzf => {
+        .browse => {
             const pages = try paths.scan(arena, io, dirs, null, null);
             if (pages.len == 0) {
                 try diag(io, "dkman: no manual pages found in the search path\n", .{});
                 return 1;
             }
-            const menu = try search.menuText(gpa, pages);
-            defer gpa.free(menu);
-            const query: ?[]const u8 = if (cfg.words.len > 0) cfg.words[0] else null;
-            const chosen = search.pick(gpa, io, menu, args[0], query) catch |err| switch (err) {
-                error.FzfNotFound => {
-                    try diag(io, "dkman: fzf is not installed; use dkman -k WORD instead\n", .{});
-                    return 1;
-                },
-                else => |e| return e,
-            };
-            const path = chosen orelse return 0;
-            defer gpa.free(path);
-            return if (try showFile(gpa, arena, io, dirs, path, opts, use_pager, pager_cmd)) 0 else 1;
+            search.sortByName(pages);
+            var query: []const u8 = if (cfg.words.len > 0) cfg.words[0] else "";
+            var select: ?[]const u8 = null;
+            var status: u8 = 0;
+            // Back to the browser after each page, with the same search.
+            while (true) {
+                const chosen = tui.run(gpa, io, dirs, pages, .{ .color = opts.color, .query = query, .select = select }) catch |err| switch (err) {
+                    error.NotATerminal => {
+                        try diag(io, "dkman: -f needs a terminal; use dkman -k WORD instead\n", .{});
+                        return 1;
+                    },
+                    else => |e| return e,
+                } orelse return status;
+                defer gpa.free(chosen.path);
+                defer gpa.free(chosen.query);
+                query = try arena.dupe(u8, chosen.query);
+                select = try arena.dupe(u8, chosen.path);
+                status = if (try showFile(gpa, arena, io, dirs, chosen.path, opts, use_pager, pager_cmd)) 0 else 1;
+                if (!use_pager) return status;
+            }
         },
     }
 }
@@ -201,34 +209,14 @@ fn diag(io: Io, comptime fmt: []const u8, args: anytype) !void {
 
 /// Loads, renders and shows one file (`-` is standard input). Returns false
 /// after reporting an error to stderr.
-fn showFile(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, path_in: []const u8, opts: render.Options, use_pager: bool, pager_cmd: []const u8) !bool {
-    var path = path_in;
-    var bytes = readInput(gpa, io, path) catch |err| {
-        try diag(io, "dkman: cannot read {s}: {s}\n", .{ path, @errorName(err) });
-        return false;
-    };
-    defer gpa.free(bytes);
-
-    // A page that only says `.so man1/other.1` shows that page. A few hops at
-    // most, so a loop of redirects ends.
-    var hops: usize = 0;
-    while (paths.soTarget(bytes)) |target| : (hops += 1) {
-        if (hops >= 4) break;
-        const next = try paths.resolveSo(arena, io, dirs, target) orelse break;
-        const loaded = readInput(gpa, io, next) catch break;
-        gpa.free(bytes);
-        bytes = loaded;
-        path = next;
-    }
-    if (paths.soTarget(bytes)) |target| {
-        try diag(io, "dkman: {s} redirects to {s}, which was not found\n", .{ path, target });
-        return false;
-    }
-
-    const fmt = format_mod.detect(path, bytes);
-    const text = render.render(gpa, fmt, bytes, opts) catch |err| switch (err) {
+fn showFile(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, path: []const u8, opts: render.Options, use_pager: bool, pager_cmd: []const u8) !bool {
+    const text = page_mod.renderFile(gpa, arena, io, dirs, path, opts) catch |err| switch (err) {
+        error.BrokenRedirect => {
+            try diag(io, "dkman: {s} redirects to a page that was not found\n", .{path});
+            return false;
+        },
         else => {
-            try diag(io, "dkman: cannot render {s}: {s}\n", .{ path, @errorName(err) });
+            try diag(io, "dkman: cannot show {s}: {s}\n", .{ path, @errorName(err) });
             return false;
         },
     };
@@ -238,22 +226,16 @@ fn showFile(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, 
     return true;
 }
 
-fn readInput(gpa: Allocator, io: Io, path: []const u8) ![]u8 {
-    if (std.mem.eql(u8, path, "-")) {
-        var buf: [4096]u8 = undefined;
-        var r = Io.File.stdin().reader(io, &buf);
-        return r.interface.allocRemaining(gpa, .limited(source.max_bytes));
-    }
-    return source.load(gpa, io, path);
-}
-
 test {
     _ = @import("paths.zig");
     _ = @import("format.zig");
     _ = @import("source.zig");
+    _ = @import("page.zig");
+    _ = @import("tui.zig");
     _ = @import("render.zig");
     _ = @import("pager.zig");
     _ = @import("search.zig");
+    _ = @import("theme.zig");
 }
 
 test "argument parsing" {

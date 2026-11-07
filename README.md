@@ -1,7 +1,7 @@
 # dkman
 
 A manual page tool in Zig: finds pages in the traditional directories, searches
-them with fzf, and shows them through a pager. Markdown documents
+them in a built-in browser (search box and preview), and shows them through a pager. Markdown documents
 (`name.1.md`) are first-class pages, read with
 [md-zig](https://github.com/BearzRobotics/md-zig).
 

@@ -6,7 +6,7 @@ Status: accepted by the maintainer in conversation.
 
 dkde needs a manual page tool that finds pages in the traditional places, reads
 the classic roff formats and the project's own Markdown documentation, searches
-with fzf, and shows pages in a pager. See md-zig decision 0002 for the split
+with a built-in browser, and shows pages in a pager. See md-zig decision 0002 for the split
 between libraries.
 
 ## Decisions
@@ -19,8 +19,9 @@ between libraries.
    preferred section order `1 n l 8 3 0 2 5 4 9 6 7`.
 3. **Format is detected from the name and the first macro line**, not the
    directory (`format.zig`).
-4. **No shell.** The pager and fzf are started directly with an argument vector.
-   fzf is the one external program required, and only for `-f`.
+4. **No shell.** The pager is started directly with an argument vector.
+   There is no required external program: `-f` is a built-in terminal browser
+   (search box left, preview right) and needs no fzf.
 5. **Search is by name** for now. A page-description index (`whatis`) needs a
    reader for the NAME section and is deferred.
 

@@ -14,6 +14,7 @@ pub const source = @import("source.zig");
 pub const format = @import("format.zig");
 pub const render = @import("render.zig");
 pub const search = @import("search.zig");
+pub const theme = @import("theme.zig");
 
 pub const Format = format.Format;
 pub const Page = paths.Page;
@@ -24,4 +25,5 @@ test {
     _ = format;
     _ = render;
     _ = search;
+    _ = theme;
 }

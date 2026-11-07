@@ -6,9 +6,11 @@ const md = @import("md");
 const gtroff = @import("gtroff");
 const Allocator = std.mem.Allocator;
 const Format = @import("format.zig").Format;
+const theme = @import("theme.zig");
 
 pub const Options = struct {
     width: usize = 80,
+    /// ANSI styles, in the dkman color theme (see `theme.zig`).
     color: bool = false,
 };
 
@@ -31,7 +33,10 @@ pub fn render(gpa: Allocator, format: Format, content: []const u8, options: Opti
     if (format == .plain) return gpa.dupe(u8, content);
     var doc = try parse(gpa, format, content);
     defer doc.deinit();
-    return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
+    const text = try doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
+    if (!options.color) return text;
+    defer gpa.free(text);
+    return theme.apply(gpa, text);
 }
 
 test "markdown and plain pages render" {

@@ -35,14 +35,20 @@ page it names.
 : List pages whose name contains WORD, as `name(section)` and path.
 
 `-f [WORD]`
-: Choose a page with fzf. The list is every page found; the preview pane shows
-  the page. WORD is the first query.
+: Browse pages. The search box and the matching pages are on the left, a
+  preview of the selected page is on the right. WORD is the first search text.
+  Several words must all match. Keys: `Up`/`Down` (`Ctrl-P`/`Ctrl-N`) select,
+  `PgUp`/`PgDn` scroll the preview, `Home`/`End` jump in it, `Enter` opens the
+  page in the pager and returns here afterwards, `Esc` or `Ctrl-C` leaves.
+  Needs a terminal.
 
 `--width N`
 : Wrap at N columns. Default: `COLUMNS`, else 80.
 
 `--no-color`
-: No ANSI styles. They are also off when standard output is not a terminal or
+: No ANSI styles (pages are otherwise shown in color: headings yellow, options
+  and commands green, arguments cyan, code magenta, page references bold
+  magenta). They are also off when standard output is not a terminal or
   `NO_COLOR` is set to a non-empty value.
 
 `--no-pager`
@@ -89,6 +95,6 @@ error.
 - Output is checked against groff by comparing the words of a sample of installed
   pages, not the layout.
 - Search matches page names only; there is no `whatis` database yet.
-- `-f` needs fzf in `PATH`.
+- `-f` needs a terminal 70 columns wide or more to show the preview.
 - Without a section, the page is chosen in the order `1 n l 8 3 0 2 5 4 9 6 7`,
   then by directory order.
