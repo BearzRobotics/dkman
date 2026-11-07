@@ -1,0 +1,23 @@
+# Architecture
+
+    argv --> main.zig --> paths.zig (MANPATH, sections) --> page path
+                 |                                              |
+                 |                         source.zig (read, gunzip)
+                 |                                              |
+                 |                         format.zig (markdown | man | mdoc | plain)
+                 |                                              |
+                 |                         render.zig --> md-zig / gtroff-zig --> text
+                 |                                              |
+                 +--> search.zig (menu, fzf)            pager.zig (PAGER or stdout)
+
+| File | Role |
+|---|---|
+| `main.zig` | Argument parsing, modes (show, `-l`, `-w`, `-k`, `-f`), exit codes |
+| `paths.zig` | Manual directories, scanning `manS` directories, choosing a page |
+| `source.zig` | Reads a file, undoes gzip; bounded by `max_bytes` |
+| `format.zig` | Decides the format from file name and first macro line |
+| `render.zig` | One entry point from format and bytes to terminal text |
+| `search.zig` | fzf menu text, running fzf, parsing its answer |
+| `pager.zig` | Splitting `PAGER`, piping text into it, falling back to stdout |
+
+Tests live next to the code (`zig build test`).

@@ -1,0 +1,11 @@
+.{
+    .name = .dkman,
+    .fingerprint = 0xd0541858ce33b795,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.1",
+    .dependencies = .{
+        // Local checkout for now; becomes a url + hash once md-zig is fetchable.
+        .md = .{ .path = "../md-zig" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "test", "LICENSE", "README.md" },
+}
