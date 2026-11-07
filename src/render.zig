@@ -49,5 +49,5 @@ test "markdown and plain pages render" {
     try t.expect(std.mem.find(u8, man, "a - thing") != null);
     const mdoc = try render(t.allocator, .mdoc, ".Dd today\n.Dt A 1\n.Sh NAME\n.Nm a\n.Nd a thing\n", .{});
     defer t.allocator.free(mdoc);
-    try t.expect(std.mem.find(u8, mdoc, "a \u{2014} a thing") != null);
+    try t.expect(std.mem.find(u8, mdoc, "**a** \u{2014} a thing") != null);
 }
