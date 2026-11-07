@@ -9,8 +9,8 @@
             .hash = "md-0.1.0-V1LLYbWSBwCfiWtt8dwXOETY1774lER-jDFfmI6rMoTW",
         },
         .gtroff = .{
-            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.2.0/gtroff-0.2.0.tar.gz",
-            .hash = "gtroff-0.2.0-7kuxtTnoAQB91emDSTJn0LmaxB4moQidggrhIhXc5veq",
+            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.2.1/gtroff-0.2.1.tar.gz",
+            .hash = "gtroff-0.2.1-7kuxtQnsAQDbEZg8IcjWeC_aKWrr879COtGjV0_9cDpI",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "test", "LICENSE", "README.md" },

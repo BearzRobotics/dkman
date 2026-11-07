@@ -112,7 +112,7 @@ pub fn main(init: std.process.Init) !u8 {
             if (cfg.words.len == 0) return usageError(io);
             var status: u8 = 0;
             for (cfg.words) |w| {
-                if (!try showFile(gpa, io, w, opts, use_pager, pager_cmd)) status = 1;
+                if (!try showFile(gpa, arena, io, dirs, w, opts, use_pager, pager_cmd)) status = 1;
             }
             return status;
         },
@@ -124,7 +124,7 @@ pub fn main(init: std.process.Init) !u8 {
                 if (std.mem.indexOfScalar(u8, name, '/') != null) {
                     if (cfg.mode == .where) {
                         try printLine(io, name);
-                    } else if (!try showFile(gpa, io, name, opts, use_pager, pager_cmd)) status = 1;
+                    } else if (!try showFile(gpa, arena, io, dirs, name, opts, use_pager, pager_cmd)) status = 1;
                     continue;
                 }
                 const page = try paths.find(arena, io, dirs, name, cfg.section) orelse {
@@ -134,7 +134,7 @@ pub fn main(init: std.process.Init) !u8 {
                 };
                 if (cfg.mode == .where) {
                     try printLine(io, page.path);
-                } else if (!try showFile(gpa, io, page.path, opts, use_pager, pager_cmd)) status = 1;
+                } else if (!try showFile(gpa, arena, io, dirs, page.path, opts, use_pager, pager_cmd)) status = 1;
             }
             return status;
         },
@@ -172,7 +172,7 @@ pub fn main(init: std.process.Init) !u8 {
             };
             const path = chosen orelse return 0;
             defer gpa.free(path);
-            return if (try showFile(gpa, io, path, opts, use_pager, pager_cmd)) 0 else 1;
+            return if (try showFile(gpa, arena, io, dirs, path, opts, use_pager, pager_cmd)) 0 else 1;
         },
     }
 }
@@ -201,12 +201,29 @@ fn diag(io: Io, comptime fmt: []const u8, args: anytype) !void {
 
 /// Loads, renders and shows one file (`-` is standard input). Returns false
 /// after reporting an error to stderr.
-fn showFile(gpa: Allocator, io: Io, path: []const u8, opts: render.Options, use_pager: bool, pager_cmd: []const u8) !bool {
-    const bytes = readInput(gpa, io, path) catch |err| {
+fn showFile(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, path_in: []const u8, opts: render.Options, use_pager: bool, pager_cmd: []const u8) !bool {
+    var path = path_in;
+    var bytes = readInput(gpa, io, path) catch |err| {
         try diag(io, "dkman: cannot read {s}: {s}\n", .{ path, @errorName(err) });
         return false;
     };
     defer gpa.free(bytes);
+
+    // A page that only says `.so man1/other.1` shows that page. A few hops at
+    // most, so a loop of redirects ends.
+    var hops: usize = 0;
+    while (paths.soTarget(bytes)) |target| : (hops += 1) {
+        if (hops >= 4) break;
+        const next = try paths.resolveSo(arena, io, dirs, target) orelse break;
+        const loaded = readInput(gpa, io, next) catch break;
+        gpa.free(bytes);
+        bytes = loaded;
+        path = next;
+    }
+    if (paths.soTarget(bytes)) |target| {
+        try diag(io, "dkman: {s} redirects to {s}, which was not found\n", .{ path, target });
+        return false;
+    }
 
     const fmt = format_mod.detect(path, bytes);
     const text = render.render(gpa, fmt, bytes, opts) catch |err| switch (err) {

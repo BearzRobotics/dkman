@@ -132,6 +132,47 @@ pub fn find(arena: Allocator, io: Io, dirs: []const []const u8, name: []const u8
     return pages[0];
 }
 
+/// If the page is only a `.so FILE` redirect (comments and blank lines aside),
+/// the FILE it names.
+pub fn soTarget(content: []const u8) ?[]const u8 {
+    var target: ?[]const u8 = null;
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |raw| {
+        const l = std.mem.trim(u8, raw, " \t\r");
+        if (l.len == 0 or std.mem.startsWith(u8, l, ".\\\"") or std.mem.startsWith(u8, l, "'\\\"")) continue;
+        if (target != null or !std.mem.startsWith(u8, l, ".so")) return null;
+        const arg = std.mem.trim(u8, l[3..], " \t");
+        if (arg.len == 0 or std.mem.indexOfAny(u8, arg, " \t") != null) return null;
+        target = arg;
+    }
+    return target;
+}
+
+/// Finds the file a `.so` redirect names. The path is relative to a manual
+/// directory (`man1/systemd.1`); `.gz` is tried too. Paths that climb out of
+/// the directory (`..`) or are absolute are refused.
+pub fn resolveSo(arena: Allocator, io: Io, dirs: []const []const u8, target: []const u8) Allocator.Error!?[]const u8 {
+    if (target.len == 0 or target[0] == '/' or std.mem.find(u8, target, "..") != null) return null;
+    for (dirs) |d| {
+        for ([_][]const u8{ "", ".gz" }) |suffix| {
+            const path = try std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ d, target, suffix });
+            Io.Dir.cwd().access(io, path, .{}) catch continue;
+            return path;
+        }
+    }
+    return null;
+}
+
+test "soTarget" {
+    const t = std.testing;
+    try t.expectEqualStrings("man1/systemd.1", soTarget(".so man1/systemd.1\n").?);
+    try t.expectEqualStrings("man3/x.3", soTarget(".\\\" note\n\n.so man3/x.3\n").?);
+    try t.expect(soTarget(".TH A 1\n.so man1/x.1\n") == null);
+    try t.expect(soTarget(".so a.1\n.so b.1\n") == null);
+    try t.expect(soTarget("text\n") == null);
+    try t.expect(soTarget("") == null);
+}
+
 test "splitFileName" {
     const t = std.testing;
     const a = splitFileName("printf.3p.gz").?;
