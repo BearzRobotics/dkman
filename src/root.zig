@@ -5,6 +5,10 @@
 //! Nothing here reads the environment or prints: callers pass `MANPATH`,
 //! the `std.Io` instance and allocators in.
 
+/// The Markdown library `render.parse` builds its documents with, re-exported
+/// so a consumer walks them with the very version dkman was built against.
+pub const md = @import("md");
+
 pub const paths = @import("paths.zig");
 pub const source = @import("source.zig");
 pub const format = @import("format.zig");
