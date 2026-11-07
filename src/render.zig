@@ -14,26 +14,24 @@ pub const Options = struct {
 
 pub const Error = md.ParseError || Allocator.Error;
 
+/// The page as a document tree, for callers that draw it themselves (a GUI
+/// viewer) or write HTML. `.plain` has no tree: wrap the text yourself.
+/// The caller owns the result and calls `deinit`.
+pub fn parse(gpa: Allocator, format: Format, content: []const u8) Error!md.Document {
+    return switch (format) {
+        .markdown => md.Document.parse(gpa, content, .{ .extensions = md.Extensions.all }),
+        .man => gtroff.parseMan(gpa, content),
+        .mdoc => gtroff.parseMdoc(gpa, content),
+        .plain => md.Document.parse(gpa, "", .{}),
+    };
+}
+
 /// The page as terminal text; the caller owns the result.
 pub fn render(gpa: Allocator, format: Format, content: []const u8, options: Options) Error![]u8 {
-    switch (format) {
-        .markdown => {
-            var doc = try md.Document.parse(gpa, content, .{ .extensions = md.Extensions.all });
-            defer doc.deinit();
-            return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
-        },
-        .man => {
-            var doc = try gtroff.parseMan(gpa, content);
-            defer doc.deinit();
-            return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
-        },
-        .mdoc => {
-            var doc = try gtroff.parseMdoc(gpa, content);
-            defer doc.deinit();
-            return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
-        },
-        .plain => return gpa.dupe(u8, content),
-    }
+    if (format == .plain) return gpa.dupe(u8, content);
+    var doc = try parse(gpa, format, content);
+    defer doc.deinit();
+    return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
 }
 
 test "markdown and plain pages render" {

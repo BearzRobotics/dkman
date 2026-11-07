@@ -21,3 +21,11 @@
 | `pager.zig` | Splitting `PAGER`, piping text into it, falling back to stdout |
 
 Tests live next to the code (`zig build test`).
+
+## Library use
+
+`build.zig` exports the module `dkman` (`src/root.zig`), which re-exports
+`paths`, `source`, `format`, `render` and `search`. `render.parse` returns an
+`md.Document` for callers that draw the page themselves (the dkde help viewer);
+`render.render` writes terminal text. `main.zig`, `pager.zig` and argument
+handling stay in the program.
