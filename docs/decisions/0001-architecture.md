@@ -32,5 +32,5 @@ between libraries.
 
 ## Consequences
 
-- dkman depends on md-zig (path dependency for now) and, later, gtroff-zig.
-- Until gtroff-zig reads man and mdoc, roff pages are reported as unsupported.
+- dkman depends on md-zig and gtroff-zig (path dependencies for now).
+- man(7) works; mdoc(7) pages are reported as unsupported until gtroff-zig reads them.

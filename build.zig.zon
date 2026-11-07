@@ -6,6 +6,7 @@
     .dependencies = .{
         // Local checkout for now; becomes a url + hash once md-zig is fetchable.
         .md = .{ .path = "../md-zig" },
+        .gtroff = .{ .path = "../gtroff-zig" },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "test", "LICENSE", "README.md" },
 }

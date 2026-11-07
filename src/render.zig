@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const md = @import("md");
+const gtroff = @import("gtroff");
 const Allocator = std.mem.Allocator;
 const Format = @import("format.zig").Format;
 
@@ -12,8 +13,8 @@ pub const Options = struct {
 };
 
 pub const Error = error{
-    /// The page is roff and no roff reader is linked in yet.
-    RoffNotSupported,
+    /// mdoc(7) pages cannot be read yet.
+    MdocNotSupported,
 } || md.ParseError || Allocator.Error;
 
 /// The page as terminal text; the caller owns the result.
@@ -24,7 +25,12 @@ pub fn render(gpa: Allocator, format: Format, content: []const u8, options: Opti
             defer doc.deinit();
             return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
         },
-        .man, .mdoc => return error.RoffNotSupported,
+        .man => {
+            var doc = try gtroff.parseMan(gpa, content);
+            defer doc.deinit();
+            return doc.toTextAlloc(gpa, .{ .width = options.width, .color = options.color });
+        },
+        .mdoc => return error.MdocNotSupported,
         .plain => return gpa.dupe(u8, content),
     }
 }
@@ -37,5 +43,8 @@ test "markdown and plain pages render" {
     const raw = try render(t.allocator, .plain, "as is\n", .{});
     defer t.allocator.free(raw);
     try t.expectEqualStrings("as is\n", raw);
-    try t.expectError(error.RoffNotSupported, render(t.allocator, .man, ".TH A 1\n", .{}));
+    const man = try render(t.allocator, .man, ".TH A 1\n.SH NAME\na \\- thing\n", .{});
+    defer t.allocator.free(man);
+    try t.expect(std.mem.find(u8, man, "a - thing") != null);
+    try t.expectError(error.MdocNotSupported, render(t.allocator, .mdoc, ".Dd today\n", .{}));
 }

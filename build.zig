@@ -8,11 +8,16 @@ pub fn build(b: *std.Build) void {
 
     const md_dep = b.dependency("md", .{ .target = target, .optimize = optimize });
 
+    const gtroff_dep = b.dependency("gtroff", .{ .target = target, .optimize = optimize });
+
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "md", .module = md_dep.module("md") }},
+        .imports = &.{
+            .{ .name = "md", .module = md_dep.module("md") },
+            .{ .name = "gtroff", .module = gtroff_dep.module("gtroff") },
+        },
     });
 
     const exe = b.addExecutable(.{ .name = "dkman", .root_module = mod });

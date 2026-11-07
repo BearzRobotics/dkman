@@ -210,8 +210,8 @@ fn showFile(gpa: Allocator, io: Io, path: []const u8, opts: render.Options, use_
 
     const fmt = format_mod.detect(path, bytes);
     const text = render.render(gpa, fmt, bytes, opts) catch |err| switch (err) {
-        error.RoffNotSupported => {
-            try diag(io, "dkman: {s} is a roff page; roff support is not built in yet\n", .{path});
+        error.MdocNotSupported => {
+            try diag(io, "dkman: {s} is an mdoc page; mdoc support is not built in yet\n", .{path});
             return false;
         },
         else => {
