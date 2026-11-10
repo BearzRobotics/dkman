@@ -1,16 +1,16 @@
 .{
     .name = .dkman,
     .fingerprint = 0xd0541858ce33b795,
-    .version = "0.3.0",
+    .version = "0.3.1",
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .md = .{
-            .url = "https://github.com/BearzRobotics/md-zig/releases/download/v0.3.0/md-0.3.0.tar.gz",
-            .hash = "md-0.3.0-V1LLYbWqBwDx92Iqx75tuTq1S_5BZ9heA64zPkBdwW4Y",
+            .url = "https://github.com/BearzRobotics/md-zig/releases/download/v0.4.0/md-0.4.0.tar.gz",
+            .hash = "md-0.4.0-V1LLYaYbCACWd9y-ASt5Xu-xkVQFKY8xJHGsUgXp9QYw",
         },
         .gtroff = .{
-            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.3.0/gtroff-0.3.0.tar.gz",
-            .hash = "gtroff-0.3.0-7kuxtV1_AgCEvxEfBvXlS0tBSX2INKJUzrfKLUUBLdgM",
+            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.4.0/gtroff-0.4.0.tar.gz",
+            .hash = "gtroff-0.4.0-7kuxtVvsAgAZUjSOnC2wm3MBFgOisiFInypeVs9iwDPr",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "test", "LICENSE", "README.md" },
