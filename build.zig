@@ -11,6 +11,8 @@ pub fn build(b: *std.Build) void {
 
     const md_dep = b.dependency("md", .{ .target = target, .optimize = optimize });
 
+    const regex_dep = b.dependency("regex", .{ .target = target, .optimize = optimize });
+
     const gtroff_dep = b.dependency("gtroff", .{ .target = target, .optimize = optimize });
 
     // The library: `b.dependency("dkman", .{}).module("dkman")`. It brings md
@@ -22,6 +24,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "md", .module = md_dep.module("md") },
             .{ .name = "gtroff", .module = gtroff_dep.module("gtroff") },
+            .{ .name = "regex", .module = regex_dep.module("regex") },
         },
     });
 
@@ -33,6 +36,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "build_options", .module = options.createModule() },
             .{ .name = "md", .module = md_dep.module("md") },
             .{ .name = "gtroff", .module = gtroff_dep.module("gtroff") },
+            .{ .name = "regex", .module = regex_dep.module("regex") },
         },
     });
 

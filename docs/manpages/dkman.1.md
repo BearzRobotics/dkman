@@ -42,6 +42,16 @@ and a leading section operand (`dkman 3 printf`) select a section.
 : Show every matching page, not only the first. With `-k`, a page must match
   all the words.
 
+`-I`, `--match-case`, `-i`, `--ignore-case`
+: Page names are compared ignoring ASCII case by default, so `dkman LS` finds
+  `ls`. `-I` makes them case sensitive.
+
+`-e`, `--extension EXTENSION`
+: Only pages whose section ends in EXTENSION: `-e perl` selects `3perl`.
+
+`-H`, `--html`
+: Write HTML instead of terminal text, to standard output.
+
 `-w`, `--where`, `--path`
 : Print the path of the page instead of showing it. Without a name, print the
   manual directories.
@@ -50,16 +60,27 @@ and a leading section operand (`dkman 3 printf`) select a section.
 : One line for every page called NAME: `name (section) - description`.
 
 `-k`, `--apropos WORD...`
-: List pages whose name or description contains any of the words, ignoring
-  case.
+: List pages whose name or description matches any of the words, ignoring case.
+  Each word is a regular expression (`-r`, the default). A word that is not a
+  valid expression is searched for as text.
+
+`-r`, `--regex`, `--wildcard`, `--exact`
+: How `-f` and `-k` compare words. `--regex`: a regular expression, found
+  anywhere (Perl syntax, from regex-zig; a pattern that takes too long counts as
+  no match). `--wildcard`: a shell wildcard (`*`, `?`, `[a-c]`) that must match the
+  whole name or a whole word of the description. `--exact`: the whole name or a
+  whole word. The default for `-f` is `--exact`, for `-k` `--regex`.
 
 `-K`, `--global-apropos WORD...`
 : List pages whose text contains all of the words. Reads every page: slow.
 
 `-b`, `--browse [WORD]`
 : Browse pages. The search box and the matching pages are on the left, a
-  preview of the selected page is on the right. WORD is the first search text.
-  Several words must all match. Keys: `Up`/`Down` (`Ctrl-P`/`Ctrl-N`) select,
+  preview of the selected page is on the right, headed by the page's name,
+  description and path. WORD is the first search text. Several words must all
+  match, each in the page name (typing letters in order is enough) or in its
+  one-line description; name matches rank first. The descriptions come from the
+  index of `-f`/`-k`, built on first use. Keys: `Up`/`Down` (`Ctrl-P`/`Ctrl-N`) select,
   `PgUp`/`PgDn` scroll the preview, `Home`/`End` jump in it, `Enter` opens the
   page in the pager and returns here afterwards, `Esc` or `Ctrl-C` leaves.
   Needs a terminal.
@@ -111,7 +132,8 @@ ends the options.
 # EXIT STATUS
 
 0 on success, 1 for a usage error, 2 if a page could not be read, 16 if no page
-(or no `-f`/`-k`/`-K` match) was found. These are man-db's codes.
+(or no `-f`/`-k`/`-K` match) was found. These are man-db's codes. When a page is
+not found, similar names are suggested on standard error (`Did you mean: ...`).
 
 # ENVIRONMENT
 
@@ -167,8 +189,9 @@ ends the options.
   pages, not the layout. Text is not justified or hyphenated.
 - bzip2 and lzma pages are read by running the system's `bzip2` and `xz`
   programs; gzip, xz and zstd are read in process.
-- `-k` and `-f` do not support regular expressions or wildcards; `-K` reads
-  every page.
+- Regular expressions use the Perl syntax of regex-zig (POSIX ERE is not
+  implemented there yet, so `[[:alpha:]]` and `{n,m}` forms of ERE may differ).
+  `-K` reads every page and matches text, not expressions.
 - Pages are not cached as `cat` pages and `mandb` databases are not read: dkman
   keeps its own index.
 - `-b` needs a terminal 70 columns wide or more to show the preview.

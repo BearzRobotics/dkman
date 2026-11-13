@@ -15,6 +15,8 @@ pub const Options = struct {
     /// Only ASCII characters: lines and bullets are drawn with `-`, `|`, `*`
     /// and typographic characters are replaced by plain ones.
     ascii: bool = false,
+    /// HTML instead of terminal text (`.plain` pages become a `<pre>` block).
+    html: bool = false,
 };
 
 pub const Error = md.ParseError || Allocator.Error;
@@ -33,9 +35,13 @@ pub fn parse(gpa: Allocator, format: Format, content: []const u8) Error!md.Docum
 
 /// The page as terminal text; the caller owns the result.
 pub fn render(gpa: Allocator, format: Format, content: []const u8, options: Options) Error![]u8 {
-    if (format == .plain) return gpa.dupe(u8, content);
+    if (format == .plain) {
+        if (!options.html) return gpa.dupe(u8, content);
+        return plainHtml(gpa, content);
+    }
     var doc = try parse(gpa, format, content);
     defer doc.deinit();
+    if (options.html) return doc.toHtmlAlloc(gpa);
     // Always drawn with styles, which keeps headings and emphasis free of
     // Markdown markers; without color the escape sequences are removed again,
     // leaving plain text like groff's `nroff -man | col -b`.
@@ -89,6 +95,20 @@ pub fn asciify(gpa: Allocator, text: []const u8) Allocator.Error![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
+fn plainHtml(gpa: Allocator, content: []const u8) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(gpa);
+    try out.appendSlice(gpa, "<pre>");
+    for (content) |c| switch (c) {
+        '<' => try out.appendSlice(gpa, "&lt;"),
+        '>' => try out.appendSlice(gpa, "&gt;"),
+        '&' => try out.appendSlice(gpa, "&amp;"),
+        else => try out.append(gpa, c),
+    };
+    try out.appendSlice(gpa, "</pre>\n");
+    return out.toOwnedSlice(gpa);
+}
+
 /// Copy of `text` without ANSI escape sequences (`ESC [ ... final byte`).
 pub fn stripEscapes(gpa: Allocator, text: []const u8) Allocator.Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
@@ -134,4 +154,14 @@ test "asciify" {
     const out = try asciify(std.testing.allocator, "a \u{2014} \u{201c}b\u{201d}\u{2026} \u{e9}");
     defer std.testing.allocator.free(out);
     try std.testing.expectEqualStrings("a -- \"b\"... ?", out);
+}
+
+test "html output" {
+    const t = std.testing;
+    const out = try render(t.allocator, .man, ".TH A 1\n.SH NAME\na \\- b\n", .{ .html = true });
+    defer t.allocator.free(out);
+    try t.expect(std.mem.find(u8, out, "<h") != null);
+    const raw = try render(t.allocator, .plain, "a < b & c\n", .{ .html = true });
+    defer t.allocator.free(raw);
+    try t.expectEqualStrings("<pre>a &lt; b &amp; c\n</pre>\n", raw);
 }

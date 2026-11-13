@@ -9,12 +9,13 @@ _dkman() {
         -M|--manpath|-l|--local-file) _filedir 2>/dev/null; return ;;
         -s|-S|--sections)
             COMPREPLY=($(compgen -W "1 2 3 4 5 6 7 8 9 n l" -- "$cur")); return ;;
-        -L|--locale|-P|--pager|--width) return ;;
+        -L|--locale|-P|--pager|--width|-e|--extension) return ;;
     esac
     if [[ $cur == -* ]]; then
-        COMPREPLY=($(compgen -W "-l -w -f -k -K -b -a -s -S -M -L -P -V -h -7
+        COMPREPLY=($(compgen -W "-l -w -f -k -K -b -a -I -i -e -H -r -s -S -M -L -P -V -h -7
             --local-file --where --path --whatis --apropos --global-apropos
-            --browse --all --sections --manpath --locale --pager --width
+            --browse --all --match-case --ignore-case --extension --html --regex --wildcard --exact
+            --sections --manpath --locale --pager --width
             --ascii --color --no-color --no-pager --update-index --version
             --help" -- "$cur"))
         return

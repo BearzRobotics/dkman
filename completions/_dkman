@@ -13,6 +13,13 @@ _arguments -s \
     '(-K --global-apropos)'{-K,--global-apropos}'[pages whose text matches]' \
     '(-b --browse)'{-b,--browse}'[browse pages]' \
     '(-a --all)'{-a,--all}'[show every matching page]' \
+    '(-I --match-case -i --ignore-case)'{-I,--match-case}'[page names are case sensitive]' \
+    '(-I --match-case -i --ignore-case)'{-i,--ignore-case}'[ignore case in page names]' \
+    '(-e --extension)'{-e+,--extension=}'[only pages of this extension]:extension' \
+    '(-H --html)'{-H,--html}'[write HTML]' \
+    '(-r --regex --wildcard --exact)'{-r,--regex}'[words are regular expressions]' \
+    '(-r --regex --wildcard --exact)--wildcard[words are shell wildcards]' \
+    '(-r --regex --wildcard --exact)--exact[words must match whole names or words]' \
     '(-s -S --sections)'{-s+,-S+,--sections=}'[only these sections]:sections' \
     '(-M --manpath)'{-M+,--manpath=}'[manual directories]:path:_files -/' \
     '(-L --locale)'{-L+,--locale=}'[language of the pages]:locale' \

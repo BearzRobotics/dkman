@@ -17,6 +17,7 @@ pub const search = @import("search.zig");
 pub const theme = @import("theme.zig");
 pub const page = @import("page.zig");
 pub const whatis = @import("whatis.zig");
+pub const glob = @import("glob.zig");
 
 pub const Format = format.Format;
 pub const Page = paths.Page;
@@ -30,4 +31,5 @@ test {
     _ = theme;
     _ = page;
     _ = whatis;
+    _ = glob;
 }

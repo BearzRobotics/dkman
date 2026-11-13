@@ -45,9 +45,27 @@ only; no `-s`, `-a`, `-M`, `-L`, `-V`; piped output contained Markdown markers;
 7. **ASCII output when the locale is not UTF-8**, as man does; `--ascii` forces
    it.
 
+8. **Regular expressions come from regex-zig** (`../regex-zig`, the engine of
+   Core Utils), not from dkman: a path dependency in `build.zig.zon`, with
+   `Options.ignore_case`, the Perl dialect and its default limits (so a
+   hostile pattern ends in an error, treated as "no match"). A word that does
+   not compile is searched for as plain text. **review:** a path dependency
+   cannot be fetched by others; switch to a release URL and hash once
+   regex-zig publishes one. regex-zig has no POSIX ERE dialect yet (see its
+   `SPEC.md`); apropos patterns written for man-db's POSIX syntax mostly work
+   in the Perl syntax. Shell wildcards for `--wildcard` are in `glob.zig`
+   because regex-zig does not cover them.
+9. **Page names ignore case by default**, as in man-db (`-I` to match case).
+10. **A miss suggests names** within one or two typos (swapping neighbours
+    counts as one), only the closest group, none for names of two letters or
+    less and none when the page exists but was filtered out.
+11. **The browser searches descriptions** from the same index: a word matches a
+    name or a description; description matches rank above letters merely found
+    in order in a name, and below any match inside a name.
+
 ## Not done
 
-Justification and hyphenation, regular expressions and wildcards for `-k`/`-f`,
+Justification and hyphenation, POSIX ERE syntax,
 `mandb` databases and `cat` pages, `-E` encodings other than UTF-8/ASCII,
 `-C`, `-D` and the other man-db options (rejected as usage errors).
 `gtroff-zig` leaves `\(aq` unresolved in some pages (seen in uutils pages); that

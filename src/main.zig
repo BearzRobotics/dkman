@@ -21,12 +21,18 @@ const usage =
     \\
     \\  -s, -S LIST      only these sections (colon or comma separated, in this order)
     \\  -a, --all        show every matching page (with -k: all words must match)
+    \\  -I, --match-case  page names are case sensitive (default: ignore case)
+    \\  -e, --extension E  only pages of this extension (the `perl` of 3perl)
+    \\  -H, --html       write HTML instead of text
     \\  -l, --local-file show a file (a path, or - for standard input)
     \\  -w, --where      print the path of the page instead of showing it
     \\  -f, --whatis     one-line descriptions of the pages called NAME
     \\  -k, --apropos    pages whose name or description contains a WORD
     \\  -K, --global-apropos  pages whose text contains a WORD
-    \\  -b, --browse     browse pages: search on the left, preview on the right
+    \\  -r, --regex      with -f/-k: words are regular expressions (-k default)
+    \\  --wildcard       with -f/-k: words are shell wildcards
+    \\  --exact          with -k: words must equal a name or a word of the description
+    \\  -b, --browse     browse pages: search on the left, preview on the right (names and descriptions)
     \\  -M, --manpath P  manual directories (colon separated) instead of $MANPATH
     \\  -L, --locale L   language of the pages (default from LC_ALL, LC_MESSAGES, LANG)
     \\  -P, --pager CMD  pager command (default: $MANPAGER, $PAGER, less)
@@ -58,6 +64,11 @@ const Config = struct {
     pager: bool = true,
     pager_cmd: ?[]const u8 = null,
     all: bool = false,
+    match_case: bool = false,
+    extension: ?[]const u8 = null,
+    html: bool = false,
+    /// With -f/-k: how words are compared; null is the mode's default.
+    match: ?whatis.Mode = null,
     manpath: ?[]const u8 = null,
     locale: ?[]const u8 = null,
     /// From `-s`: the sections to look in, in order.
@@ -69,7 +80,7 @@ const Config = struct {
 
 const ParseError = error{Usage};
 
-const Opt = enum { local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
+const Opt = enum { match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
 
 const OptSpec = struct { short: u8 = 0, long: []const u8 = "", opt: Opt, value: bool = false };
 
@@ -82,6 +93,13 @@ const option_table = [_]OptSpec{
     .{ .short = 'K', .long = "global-apropos", .opt = .global },
     .{ .short = 'b', .long = "browse", .opt = .browse },
     .{ .short = 'a', .long = "all", .opt = .all },
+    .{ .short = 'I', .long = "match-case", .opt = .match_case },
+    .{ .short = 'i', .long = "ignore-case", .opt = .ignore_case },
+    .{ .short = 'e', .long = "extension", .opt = .extension, .value = true },
+    .{ .short = 'H', .long = "html", .opt = .html },
+    .{ .short = 'r', .long = "regex", .opt = .regex },
+    .{ .long = "wildcard", .opt = .wildcard },
+    .{ .long = "exact", .opt = .exact },
     .{ .short = 's', .long = "sections", .opt = .sections, .value = true },
     .{ .short = 'S', .opt = .sections, .value = true },
     .{ .short = 'M', .long = "manpath", .opt = .manpath, .value = true },
@@ -176,6 +194,13 @@ fn apply(cfg: *Config, opt: Opt, value: ?[]const u8) (ParseError || Allocator.Er
         .update_index => cfg.mode = .update_index,
         .version => cfg.mode = .version,
         .all => cfg.all = true,
+        .match_case => cfg.match_case = true,
+        .ignore_case => cfg.match_case = false,
+        .extension => cfg.extension = value,
+        .html => cfg.html = true,
+        .regex => cfg.match = .regex,
+        .wildcard => cfg.match = .wildcard,
+        .exact => cfg.match = .exact,
         .sections => cfg.sections = try splitList(value.?),
         .manpath => cfg.manpath = value,
         .pager => cfg.pager_cmd = value,
@@ -219,6 +244,8 @@ const Ctx = struct {
     /// Order sections are tried in.
     order: []const []const u8,
     opts: render.Options,
+    /// Page names are compared ignoring case (man-db's default; -I turns it off).
+    ignore_case: bool,
     use_pager: bool,
     pager_cmd: []const u8,
     cache_file: ?[]const u8,
@@ -259,6 +286,7 @@ fn run(init: std.process.Init) !u8 {
         .width = cfg.width orelse try widthFor(env, stdout_tty),
         .color = use_color,
         .ascii = cfg.ascii orelse !utf8Locale(env),
+        .html = cfg.html,
     };
 
     // Manual directories: -M, MANPATH, or derived from PATH and the config file.
@@ -284,7 +312,8 @@ fn run(init: std.process.Init) !u8 {
         .base_dirs = base_dirs,
         .order = order,
         .opts = opts,
-        .use_pager = cfg.pager and stdout_tty,
+        .ignore_case = !cfg.match_case,
+        .use_pager = cfg.pager and stdout_tty and !cfg.html,
         .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")) orelse "less",
         .cache_file = try cacheFile(arena, env, dirs),
     };
@@ -340,11 +369,13 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
         const ns = paths.splitNameSection(arg);
         const section = cfg.section orelse ns.section;
         const wanted: []const []const u8 = if (cfg.sections.len > 0) cfg.sections else if (section) |sec| &.{sec} else &.{};
-        const found = try paths.findAll(ctx.arena, ctx.io, ctx.dirs, ns.name, wanted, ctx.order);
+        var found: []const paths.Page = try paths.findAll(ctx.arena, ctx.io, ctx.dirs, ns.name, wanted, ctx.order, ctx.ignore_case);
+        if (cfg.extension) |ext| found = try withExtension(ctx.arena, found, ext);
         if (found.len == 0) {
             if (wanted.len == 1) {
                 try diag(ctx.io, "No manual entry for {s} in section {s}\n", .{ ns.name, wanted[0] });
             } else try diag(ctx.io, "No manual entry for {s}\n", .{ns.name});
+            try suggestNames(ctx, ns.name);
             status = exit_not_found;
             continue;
         }
@@ -369,6 +400,23 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
     return status;
 }
 
+/// Pages whose section carries the extension: `perl` keeps `3perl`.
+fn withExtension(arena: Allocator, pages: []const paths.Page, ext: []const u8) Allocator.Error![]const paths.Page {
+    var out: std.ArrayList(paths.Page) = .empty;
+    for (pages) |p| {
+        if (p.section.len > 1 and std.ascii.eqlIgnoreCase(p.section[1..], ext)) try out.append(arena, p);
+    }
+    return out.items;
+}
+
+/// After a miss: pages with a similar name, on standard error.
+fn suggestNames(ctx: Ctx, name: []const u8) !void {
+    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null, false);
+    const names = try search.suggest(ctx.arena, pages, name, 5);
+    if (names.len == 0) return;
+    try diag(ctx.io, "Did you mean: {s}?\n", .{try std.mem.join(ctx.arena, ", ", names)});
+}
+
 fn loadIndex(ctx: Ctx, force: bool) ![]whatis.Entry {
     return whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_file, force, "dkman: building the page index (first use, or the manual directories changed)...\n");
 }
@@ -378,7 +426,7 @@ fn runWhatis(ctx: Ctx, cfg: Config) !u8 {
     const entries = try loadIndex(ctx, false);
     const sections = cfg.sections;
     if (cfg.mode == .apropos) {
-        const hits = try whatis.keywords(ctx.arena, entries, cfg.words, cfg.all, sections);
+        const hits = try whatis.keywords(ctx.arena, entries, cfg.words, cfg.all, cfg.match orelse .regex, sections);
         if (hits.len == 0) {
             try diag(ctx.io, "{s}: nothing appropriate.\n", .{cfg.words[0]});
             return exit_not_found;
@@ -392,7 +440,7 @@ fn runWhatis(ctx: Ctx, cfg: Config) !u8 {
     for (cfg.words) |w| {
         const name = paths.splitNameSection(w);
         const secs: []const []const u8 = if (name.section) |s| &.{s} else sections;
-        const hits = try whatis.exact(ctx.arena, entries, name.name, secs);
+        const hits = try whatis.lookup(ctx.arena, entries, name.name, cfg.match orelse .exact, ctx.ignore_case, secs);
         if (hits.len == 0) {
             try diag(ctx.io, "{s}: nothing appropriate.\n", .{name.name});
             status = exit_not_found;
@@ -408,7 +456,7 @@ fn runWhatis(ctx: Ctx, cfg: Config) !u8 {
 /// `-K`: pages whose text contains every word, found by reading them all.
 fn runGlobal(ctx: Ctx, cfg: Config) !u8 {
     if (cfg.words.len == 0) return usageError(ctx.io);
-    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null);
+    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null, false);
     search.sortByName(pages);
     var hits: std.ArrayList(paths.Page) = .empty;
     for (pages) |pg| {
@@ -450,18 +498,20 @@ fn runUpdate(ctx: Ctx) !u8 {
 }
 
 fn runBrowse(ctx: Ctx, cfg: Config) !u8 {
-    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null);
+    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null, false);
     if (pages.len == 0) {
         try diag(ctx.io, "dkman: no manual pages found in the search path\n", .{});
         return exit_not_found;
     }
     search.sortByName(pages);
-    var query: []const u8 = if (cfg.words.len > 0) cfg.words[0] else "";
+    // Descriptions from the cached index let the search look beyond names.
+    const descriptions = try describePages(ctx, pages);
+    var query: []const u8 = if (cfg.words.len > 0) try std.mem.join(ctx.arena, " ", cfg.words) else "";
     var select: ?[]const u8 = null;
     var status: u8 = 0;
     // Back to the browser after each page, with the same search.
     while (true) {
-        const chosen = tui.run(ctx.gpa, ctx.io, ctx.dirs, pages, .{ .color = ctx.opts.color, .query = query, .select = select }) catch |err| switch (err) {
+        const chosen = tui.run(ctx.gpa, ctx.io, ctx.dirs, pages, .{ .color = ctx.opts.color, .query = query, .select = select, .descriptions = descriptions }) catch |err| switch (err) {
             error.NotATerminal => {
                 try diag(ctx.io, "dkman: -b needs a terminal; use dkman -k WORD instead\n", .{});
                 return exit_failed;
@@ -479,6 +529,18 @@ fn runBrowse(ctx: Ctx, cfg: Config) !u8 {
         } else status = exit_failed;
         if (!ctx.use_pager) return status;
     }
+}
+
+/// The description of each page, from the index, in the order of `pages`.
+fn describePages(ctx: Ctx, pages: []const paths.Page) ![]const []const u8 {
+    const entries = try loadIndex(ctx, false);
+    var by_path: std.StringHashMapUnmanaged([]const u8) = .empty;
+    for (entries) |e| {
+        if (e.description.len > 0) try by_path.put(ctx.arena, e.path, e.description);
+    }
+    const out = try ctx.arena.alloc([]const u8, pages.len);
+    for (pages, out) |pg, *d| d.* = by_path.get(pg.path) orelse "";
+    return out;
 }
 
 // ----------------------------------------------------------------- helpers
@@ -602,6 +664,7 @@ test {
     _ = @import("search.zig");
     _ = @import("theme.zig");
     _ = @import("whatis.zig");
+    _ = @import("glob.zig");
 }
 
 test "argument parsing" {

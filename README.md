@@ -28,5 +28,5 @@ The page index for `-f` and `-k` is built on first use (about a second) and cach
 in `~/.cache/dkman/`. Page names in the completions come from it.
 
 See `docs/manpages/dkman.1.md` for the options, `docs/architecture.md` for the
-layout and `docs/decisions/` for the reasoning. Zig 0.17.1. `test/tools/cli.sh` checks the command line. Dependencies (md-zig, gtroff-zig) are fetched
+layout and `docs/decisions/` for the reasoning. Zig 0.17.1. Needs a checkout of regex-zig next to this directory (`../regex-zig`) until it has a release. `test/tools/cli.sh` checks the command line. Dependencies (md-zig, gtroff-zig) are fetched
 by `zig build` from their GitHub releases. License: MIT.

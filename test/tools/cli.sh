@@ -57,6 +57,18 @@ run -k nosuchword 2>/dev/null; [ $? -eq 16 ]; check "-k without hits exits 16" $
 [ "$(run -ak foo call | wc -l)" -eq 2 ]; check "-ak needs all words" $?
 run -K 'body of txz' | grep -q 'txz(1)'; check "-K searches text" $?
 
+[ "$(run -w FOO)" = "$m/man1/foo.1" ]; check "page names ignore case by default" $?
+run -I -w FOO 2>/dev/null; [ $? -eq 16 ]; check "-I matches case" $?
+[ "$(run -e p -w foo)" = "$m/man3p/foo.3p" ]; check "-e picks the extension" $?
+run -H foo | grep -q '<h'; check "-H writes HTML" $?
+run tbgz 2>&1 | grep -q "Did you mean:.*tgz"; check "a miss suggests similar names" $?
+run -k '^foo.*call$' | grep -q 'foo (3) '; check "-k takes a regular expression" $?
+run -k '(foo|zstd) page' | grep -q 'tzst'; check "-k alternation and groups" $?
+[ "$(run --wildcard -f 't*z')" != "" ]; check "-f --wildcard" $?
+[ "$(run --wildcard -f 'foo*' | wc -l)" -eq 3 ]; check "--wildcard matches names" $?
+run --exact -k posix | grep -q 'foo (3p)'; check "-k --exact matches whole words" $?
+run --exact -k posi 2>/dev/null; [ $? -eq 16 ]; check "--exact does not match part of a word" $?
+
 # The index follows the manual directories.
 page tnew 1 "added later" | gzip -c > "$m/man1/tnew.1.gz"
 sleep 1; touch "$m/man1"

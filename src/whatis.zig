@@ -12,6 +12,8 @@ const Allocator = std.mem.Allocator;
 const paths = @import("paths.zig");
 const page_mod = @import("page.zig");
 const render = @import("render.zig");
+const regex = @import("regex");
+const glob = @import("glob.zig");
 
 pub const Entry = struct {
     name: []const u8,
@@ -155,7 +157,7 @@ fn fingerprint(io: Io, dirs: []const []const u8) u64 {
 /// Reads every page and gathers the names and descriptions. Slow (it renders
 /// every page): prefer `load`, which caches. `gpa` owns the result's text.
 pub fn build(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8) Allocator.Error![]Entry {
-    const pages = try paths.scan(arena, io, dirs, null, null);
+    const pages = try paths.scan(arena, io, dirs, null, null, false);
     var out: std.ArrayList(Entry) = .empty;
     for (pages) |pg| {
         var scratch_state = std.heap.ArenaAllocator.init(gpa);
@@ -293,26 +295,99 @@ pub fn listing(gpa: Allocator, entries: []const Entry) Allocator.Error![]u8 {
     return out.toOwnedSlice(gpa);
 }
 
-/// Entries whose name is exactly `name` (whatis).
-pub fn exact(arena: Allocator, entries: []const Entry, name: []const u8, sections: []const []const u8) Allocator.Error![]Entry {
+/// How a search word is compared.
+pub const Mode = enum {
+    /// The whole name (or, for descriptions, a whole word) is equal.
+    exact,
+    /// A regular expression (regex-zig, Perl syntax) found anywhere. A word that is
+    /// not a valid expression is searched for literally.
+    regex,
+    /// A shell wildcard matching the whole name (or a whole word).
+    wildcard,
+};
+
+/// One search word, prepared for matching against many entries. The compiled
+/// expression lives in the arena given to `init`; there is nothing to free.
+pub const Matcher = struct {
+    word: []const u8,
+    mode: Mode,
+    searcher: ?regex.Searcher = null,
+    /// For `exact` names: compare ignoring ASCII case.
+    ignore_case: bool = true,
+
+    /// A word that is not a valid expression (or too big for regex-zig's
+    /// limits) is searched for literally.
+    pub fn init(arena: Allocator, word: []const u8, mode: Mode, ignore_case: bool) Allocator.Error!Matcher {
+        var m: Matcher = .{ .word = word, .mode = mode, .ignore_case = ignore_case };
+        if (mode == .regex) {
+            const re = try arena.create(regex.Regex);
+            if (regex.Regex.compile(arena, word, .{ .ignore_case = true }, null)) |compiled| {
+                re.* = compiled;
+                m.searcher = try re.searcher(arena);
+            } else |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {},
+            }
+        }
+        return m;
+    }
+
+    fn contains(m: *Matcher, text: []const u8) bool {
+        if (m.searcher) |*s| {
+            // A pattern that runs out of its step budget counts as no match.
+            const found = s.find(text, 0) catch return false;
+            return found != null;
+        }
+        return std.ascii.findIgnoreCase(text, m.word) != null;
+    }
+
+    /// Does the page name match?
+    pub fn name(m: *Matcher, text: []const u8) bool {
+        return switch (m.mode) {
+            .exact => if (m.ignore_case) std.ascii.eqlIgnoreCase(text, m.word) else std.mem.eql(u8, text, m.word),
+            .regex => m.contains(text),
+            .wildcard => glob.glob(m.word, text),
+        };
+    }
+
+    /// Does the description match?
+    pub fn description(m: *Matcher, text: []const u8) bool {
+        switch (m.mode) {
+            .regex => return m.contains(text),
+            .exact, .wildcard => {
+                var words = std.mem.tokenizeAny(u8, text, " \t,.;:()\"'");
+                while (words.next()) |w| {
+                    const hit = if (m.mode == .exact) std.ascii.eqlIgnoreCase(w, m.word) else glob.glob(m.word, w);
+                    if (hit) return true;
+                }
+                return false;
+            },
+        }
+    }
+};
+
+/// Entries whose name matches `word` (whatis).
+pub fn lookup(arena: Allocator, entries: []const Entry, word: []const u8, mode: Mode, ignore_case: bool, sections: []const []const u8) Allocator.Error![]Entry {
+    var m = try Matcher.init(arena, word, mode, ignore_case);
     var out: std.ArrayList(Entry) = .empty;
     for (entries) |e| {
-        if (!std.mem.eql(u8, e.name, name)) continue;
         if (!inSections(e, sections)) continue;
-        try out.append(arena, e);
+        if (m.name(e.name)) try out.append(arena, e);
     }
     return out.items;
 }
 
-/// Entries whose name or description contains a keyword, ignoring case
-/// (apropos). With `all`, every keyword must be found; otherwise any one.
-pub fn keywords(arena: Allocator, entries: []const Entry, words: []const []const u8, all: bool, sections: []const []const u8) Allocator.Error![]Entry {
+/// Entries whose name or description matches a word (apropos). With `all`,
+/// every word must match; otherwise any one.
+pub fn keywords(arena: Allocator, entries: []const Entry, words: []const []const u8, all: bool, mode: Mode, sections: []const []const u8) Allocator.Error![]Entry {
+    const matchers = try arena.alloc(Matcher, words.len);
+    for (words, matchers) |w, *m| m.* = try Matcher.init(arena, w, mode, true);
     var out: std.ArrayList(Entry) = .empty;
     for (entries) |e| {
         if (!inSections(e, sections)) continue;
         var hits: usize = 0;
-        for (words) |w| {
-            if (std.ascii.findIgnoreCase(e.name, w) != null or std.ascii.findIgnoreCase(e.description, w) != null) hits += 1;
+        for (matchers) |*m| {
+            if (m.name(e.name) or m.description(e.description)) hits += 1;
         }
         if (if (all) hits == words.len else hits > 0) try out.append(arena, e);
     }
@@ -367,11 +442,21 @@ test "index round trip and search" {
     try t.expectEqual(@as(usize, 2), back.len);
     try t.expectEqualStrings("open a file", back[1].description);
 
-    try t.expectEqual(@as(usize, 1), (try exact(a, back, "ls", &.{})).len);
-    try t.expectEqual(@as(usize, 0), (try exact(a, back, "ls", &.{"2"})).len);
-    try t.expectEqual(@as(usize, 1), (try keywords(a, back, &.{ "FILE", "zzz" }, false, &.{})).len);
-    try t.expectEqual(@as(usize, 0), (try keywords(a, back, &.{ "file", "zzz" }, true, &.{})).len);
-    try t.expectEqual(@as(usize, 2), (try keywords(a, back, &.{"o"}, true, &.{})).len);
+    try t.expectEqual(@as(usize, 1), (try lookup(a, back, "ls", .exact, true, &.{})).len);
+    try t.expectEqual(@as(usize, 1), (try lookup(a, back, "LS", .exact, true, &.{})).len);
+    try t.expectEqual(@as(usize, 0), (try lookup(a, back, "LS", .exact, false, &.{})).len);
+    try t.expectEqual(@as(usize, 0), (try lookup(a, back, "ls", .exact, true, &.{"2"})).len);
+    try t.expectEqual(@as(usize, 1), (try lookup(a, back, "o*", .wildcard, true, &.{})).len);
+    try t.expectEqual(@as(usize, 1), (try lookup(a, back, "^l", .regex, true, &.{})).len);
+    try t.expectEqual(@as(usize, 1), (try keywords(a, back, &.{ "FILE", "zzz" }, false, .regex, &.{})).len);
+    try t.expectEqual(@as(usize, 0), (try keywords(a, back, &.{ "file", "zzz" }, true, .regex, &.{})).len);
+    try t.expectEqual(@as(usize, 2), (try keywords(a, back, &.{"o"}, true, .regex, &.{})).len);
+    // Regex, a bad regex taken literally, whole words, wildcards.
+    try t.expectEqual(@as(usize, 1), (try keywords(a, back, &.{"^open|^zz"}, false, .regex, &.{})).len);
+    try t.expectEqual(@as(usize, 0), (try keywords(a, back, &.{"(open"}, false, .regex, &.{})).len);
+    try t.expectEqual(@as(usize, 1), (try keywords(a, back, &.{"director*"}, false, .wildcard, &.{})).len);
+    try t.expectEqual(@as(usize, 0), (try keywords(a, back, &.{"direct"}, false, .exact, &.{})).len);
+    try t.expectEqual(@as(usize, 1), (try keywords(a, back, &.{"directory"}, false, .exact, &.{})).len);
 }
 
 test "listing lines" {

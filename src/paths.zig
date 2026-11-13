@@ -80,6 +80,10 @@ fn sectionMatches(wanted: ?[]const u8, section: []const u8) bool {
     return std.mem.startsWith(u8, section, w);
 }
 
+fn sameName(wanted: []const u8, name: []const u8, ignore_case: bool) bool {
+    return if (ignore_case) std.ascii.eqlIgnoreCase(wanted, name) else std.mem.eql(u8, wanted, name);
+}
+
 /// Calls `visit` for every page below the manual directories. `wanted_name`
 /// and `wanted_section` filter when given. Directories that cannot be opened
 /// are skipped: a missing `/usr/man` is normal.
@@ -89,6 +93,7 @@ pub fn scan(
     dirs: []const []const u8,
     wanted_name: ?[]const u8,
     wanted_section: ?[]const u8,
+    ignore_case: bool,
 ) Allocator.Error![]Page {
     var pages: std.ArrayList(Page) = .empty;
     for (dirs, 0..) |dir_path, dir_index| {
@@ -106,7 +111,7 @@ pub fn scan(
             while (files.next(io) catch break) |f| {
                 if (f.kind != .file and f.kind != .sym_link) continue;
                 const parts = splitFileName(f.name) orelse continue;
-                if (wanted_name) |w| if (!std.mem.eql(u8, w, parts.name)) continue;
+                if (wanted_name) |w| if (!sameName(w, parts.name, ignore_case)) continue;
                 try pages.append(arena, .{
                     .name = try arena.dupe(u8, parts.name),
                     .section = try arena.dupe(u8, parts.section),
@@ -139,7 +144,8 @@ pub fn sortByPreference(pages: []Page, order: []const []const u8) void {
 
 /// Every page called `name`, most preferred first. `sections` limits the
 /// result to those sections (`3` includes `3p`) and also sets the order; when
-/// empty every section is considered, tried in `order`.
+/// empty every section is considered, tried in `order`. Names are compared
+/// ignoring ASCII case when `ignore_case` is set.
 pub fn findAll(
     arena: Allocator,
     io: Io,
@@ -147,8 +153,9 @@ pub fn findAll(
     name: []const u8,
     sections: []const []const u8,
     order: []const []const u8,
+    ignore_case: bool,
 ) Allocator.Error![]Page {
-    const all = try scan(arena, io, dirs, name, null);
+    const all = try scan(arena, io, dirs, name, null, ignore_case);
     var kept: std.ArrayList(Page) = .empty;
     for (all) |p| {
         if (sections.len > 0) {
@@ -165,9 +172,9 @@ pub fn findAll(
 }
 
 /// The page `man NAME` (or `man SECTION NAME`) would show, or null.
-pub fn find(arena: Allocator, io: Io, dirs: []const []const u8, name: []const u8, section: ?[]const u8, order: []const []const u8) Allocator.Error!?Page {
+pub fn find(arena: Allocator, io: Io, dirs: []const []const u8, name: []const u8, section: ?[]const u8, order: []const []const u8, ignore_case: bool) Allocator.Error!?Page {
     const wanted: []const []const u8 = if (section) |sec| &.{sec} else &.{};
-    const pages = try findAll(arena, io, dirs, name, wanted, order);
+    const pages = try findAll(arena, io, dirs, name, wanted, order, ignore_case);
     if (pages.len == 0) return null;
     return pages[0];
 }
@@ -383,14 +390,16 @@ test "find picks the preferred section and honours a requested one" {
     const root = try tmp.dir.realPathFileAlloc(io, "m", a);
     const dirs = [_][]const u8{ root, "/nonexistent-dkman-dir" };
 
-    const any = (try find(a, io, &dirs, "foo", null, &default_sections)).?;
+    const any = (try find(a, io, &dirs, "foo", null, &default_sections, false)).?;
     try t.expectEqualStrings("1", any.section);
-    const three = (try find(a, io, &dirs, "foo", "3", &default_sections)).?;
+    const three = (try find(a, io, &dirs, "foo", "3", &default_sections, false)).?;
     try t.expectEqualStrings("3", three.section);
-    const posix = (try find(a, io, &dirs, "foo", "3p", &default_sections)).?;
+    const posix = (try find(a, io, &dirs, "foo", "3p", &default_sections, false)).?;
     try t.expectEqualStrings("3p", posix.section);
-    try t.expect((try find(a, io, &dirs, "missing", null, &default_sections)) == null);
-    const md_page = (try find(a, io, &dirs, "other", null, &default_sections)).?;
+    try t.expect((try find(a, io, &dirs, "missing", null, &default_sections, false)) == null);
+    try t.expect((try find(a, io, &dirs, "FOO", null, &default_sections, false)) == null);
+    try t.expectEqualStrings("1", (try find(a, io, &dirs, "FOO", null, &default_sections, true)).?.section);
+    const md_page = (try find(a, io, &dirs, "other", null, &default_sections, false)).?;
     try t.expect(std.mem.endsWith(u8, md_page.path, "other.1.md"));
 }
 
@@ -423,10 +432,10 @@ test "findAll restricts to the given sections and orders by them" {
     const a = arena_state.allocator();
     const dirs = [_][]const u8{try tmp.dir.realPathFileAlloc(io, "m", a)};
 
-    const all = try findAll(a, io, &dirs, "foo", &.{}, &default_sections);
+    const all = try findAll(a, io, &dirs, "foo", &.{}, &default_sections, false);
     try t.expectEqual(@as(usize, 3), all.len);
     try t.expectEqualStrings("1", all[0].section);
-    const some = try findAll(a, io, &dirs, "foo", &.{ "5", "3" }, &default_sections);
+    const some = try findAll(a, io, &dirs, "foo", &.{ "5", "3" }, &default_sections, false);
     try t.expectEqual(@as(usize, 2), some.len);
     try t.expectEqualStrings("5", some[0].section);
 }
