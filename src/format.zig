@@ -12,15 +12,22 @@ pub const Format = enum {
     plain,
 };
 
-/// The file name without a trailing `.gz`.
-pub fn withoutGz(path: []const u8) []const u8 {
-    return if (std.mem.endsWith(u8, path, ".gz")) path[0 .. path.len - 3] else path;
+/// Compression suffixes a page file may carry.
+pub const compression_suffixes = [_][]const u8{ ".gz", ".xz", ".zst", ".bz2", ".lzma" };
+
+/// The file name without a trailing compression suffix (`.gz`, `.xz`, `.zst`,
+/// `.bz2`, `.lzma`).
+pub fn withoutCompression(path: []const u8) []const u8 {
+    for (compression_suffixes) |suf| {
+        if (std.mem.endsWith(u8, path, suf)) return path[0 .. path.len - suf.len];
+    }
+    return path;
 }
 
 /// Decides from the file name and the (decompressed) text. The name wins for
 /// Markdown; roff is recognised by its first macro line.
 pub fn detect(path: []const u8, content: []const u8) Format {
-    const p = withoutGz(path);
+    const p = withoutCompression(path);
     if (std.mem.endsWith(u8, p, ".md") or std.mem.endsWith(u8, p, ".markdown")) return .markdown;
 
     var lines = std.mem.splitScalar(u8, content, '\n');
@@ -51,6 +58,7 @@ test "detect by name and content" {
     const t = std.testing;
     try t.expectEqual(Format.markdown, detect("a.1.md", ".TH x 1"));
     try t.expectEqual(Format.markdown, detect("a.1.md.gz", ""));
+    try t.expectEqual(Format.markdown, detect("a.1.md.zst", ""));
     try t.expectEqual(Format.man, detect("a.1", ".\\\" comment\n.TH A 1\n.SH NAME\n"));
     try t.expectEqual(Format.mdoc, detect("a.1", ".Dd $Mdocdate$\n.Dt A 1\n"));
     try t.expectEqual(Format.mdoc, detect("a.1", ".\\\" c\n.Dd January 1, 2026\n"));
