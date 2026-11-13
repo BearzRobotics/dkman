@@ -78,9 +78,9 @@ const Config = struct {
     words: []const []const u8 = &.{},
 };
 
-const ParseError = error{Usage};
+const ParseError = error{ Usage, Unsupported };
 
-const Opt = enum { match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
+const Opt = enum { unsupported, match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
 
 const OptSpec = struct { short: u8 = 0, long: []const u8 = "", opt: Opt, value: bool = false };
 
@@ -118,9 +118,37 @@ const option_table = [_]OptSpec{
     .{ .long = "nh", .opt = .ignored },
     .{ .long = "nj", .opt = .ignored },
     .{ .short = 'E', .long = "encoding", .opt = .ignored, .value = true },
+    .{ .short = 'C', .long = "config-file", .opt = .ignored, .value = true },
+    .{ .short = 'm', .long = "systems", .opt = .ignored, .value = true },
+    .{ .short = 'd', .long = "debug", .opt = .ignored },
+    .{ .short = 'D', .opt = .ignored },
+    .{ .short = 'c', .long = "catman", .opt = .ignored },
+    .{ .short = 'u', .opt = .ignored },
+    // Typeset output (troff, PostScript) is not something dkman can make.
+    .{ .short = 't', .long = "troff", .opt = .unsupported },
+    .{ .short = 'T', .long = "troff-device", .opt = .unsupported, .value = true },
 };
 
-fn lookupShort(c: u8) ?OptSpec {
+/// Which command the program was started as: dkman, man, or one of the
+/// companions man-db installs as separate commands.
+const Prog = enum { man, whatis, apropos, manpath, mandb };
+
+fn progOf(argv0: []const u8) Prog {
+    const base = std.fs.path.basename(argv0);
+    inline for (.{ "whatis", "apropos", "manpath", "mandb" }) |name| {
+        if (std.mem.eql(u8, base, name)) return @field(Prog, name);
+    }
+    return .man;
+}
+
+fn lookupShort(prog: Prog, c: u8) ?OptSpec {
+    // whatis(1) and apropos(1) use some letters differently from man(1).
+    if (prog == .whatis or prog == .apropos) switch (c) {
+        'w' => return .{ .short = 'w', .long = "wildcard", .opt = .wildcard },
+        'e' => return .{ .short = 'e', .long = "exact", .opt = .exact },
+        'l' => return .{ .short = 'l', .long = "long", .opt = .ignored },
+        else => {},
+    };
     for (option_table) |o| if (o.short == c) return o;
     return null;
 }
@@ -132,6 +160,22 @@ fn lookupLong(name: []const u8) ?OptSpec {
 
 fn parseArgs(arena: Allocator, args: []const [:0]const u8) (ParseError || Allocator.Error)!Config {
     var cfg: Config = .{};
+    const prog = progOf(args[0]);
+    switch (prog) {
+        .man => {},
+        .whatis => cfg.mode = .whatis,
+        .apropos => cfg.mode = .apropos,
+        // These two take options of their own that dkman has no use for; only
+        // the version and help requests mean anything.
+        .manpath, .mandb => {
+            cfg.mode = if (prog == .manpath) .where else .update_index;
+            for (args[1..]) |a| {
+                if (std.mem.eql(u8, a, "-V") or std.mem.eql(u8, a, "--version")) cfg.mode = .version;
+                if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-?")) return error.Usage;
+            }
+            return cfg;
+        },
+    }
     var words: std.ArrayList([]const u8) = .empty;
     var i: usize = 1;
     var only_words = false;
@@ -160,7 +204,7 @@ fn parseArgs(arena: Allocator, args: []const [:0]const u8) (ParseError || Alloca
         // A cluster of short options: `-aw`, `-s3`, `-s 3`.
         var j: usize = 1;
         while (j < a.len) : (j += 1) {
-            const spec = lookupShort(a[j]) orelse return error.Usage;
+            const spec = lookupShort(prog, a[j]) orelse return error.Usage;
             if (spec.value) {
                 var value: []const u8 = a[j + 1 ..];
                 if (value.len == 0) {
@@ -212,6 +256,7 @@ fn apply(cfg: *Config, opt: Opt, value: ?[]const u8) (ParseError || Allocator.Er
         .ascii => cfg.ascii = true,
         .help => return error.Usage,
         .ignored => {},
+        .unsupported => return error.Unsupported,
     }
 }
 
@@ -231,6 +276,19 @@ fn splitList(text: []const u8) ParseError![]const []const u8 {
 fn isSection(s: []const u8) bool {
     return s.len > 0 and s.len <= 4 and (std.ascii.isDigit(s[0]) or s[0] == 'n' or s[0] == 'l') and
         std.ascii.isAlphanumeric(s[s.len - 1]);
+}
+
+/// `MANOPT` holds options that come before the command line's own, as in
+/// man-db. Only for the `man` command: the companions have other options.
+fn withManopt(arena: Allocator, args: []const [:0]const u8, manopt: ?[]const u8) Allocator.Error![]const [:0]const u8 {
+    const text = manopt orelse return args;
+    if (args.len == 0 or progOf(args[0]) != .man) return args;
+    var out: std.ArrayList([:0]const u8) = .empty;
+    try out.append(arena, args[0]);
+    var it = std.mem.tokenizeAny(u8, text, " \t");
+    while (it.next()) |w| try out.append(arena, try arena.dupeSentinel(u8, w, 0));
+    try out.appendSlice(arena, args[1..]);
+    return out.items;
 }
 
 /// Everything the modes share.
@@ -264,11 +322,16 @@ fn run(init: std.process.Init) !u8 {
     const io = init.io;
     const arena = init.arena.allocator();
     const env = init.environ_map;
-    const args = try init.minimal.args.toSlice(arena);
+    const given = try init.minimal.args.toSlice(arena);
+    const args = try withManopt(arena, given, init.environ_map.get("MANOPT"));
 
     const cfg = parseArgs(arena, args) catch |err| switch (err) {
         error.Usage => {
             try Io.File.stderr().writeStreamingAll(io, usage);
+            return exit_usage;
+        },
+        error.Unsupported => {
+            try diag(io, "dkman: typeset output (-t, -T) is not supported\n", .{});
             return exit_usage;
         },
         error.OutOfMemory => return error.OutOfMemory,
@@ -384,18 +447,15 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
             for (chosen) |pg| try printLine(ctx.io, pg.path);
             continue;
         }
-        var text: std.ArrayList(u8) = .empty;
-        defer text.deinit(ctx.gpa);
+        // One page at a time, each in its own pager: leaving one shows the next.
         for (chosen) |pg| {
-            const one = try renderPath(ctx, pg.path) orelse {
+            const text = try renderPath(ctx, pg.path) orelse {
                 status = exit_failed;
                 continue;
             };
-            defer ctx.gpa.free(one);
-            if (text.items.len > 0) try text.appendSlice(ctx.gpa, "\n");
-            try text.appendSlice(ctx.gpa, one);
+            defer ctx.gpa.free(text);
+            try display(ctx, text);
         }
-        if (text.items.len > 0) try display(ctx, text.items);
     }
     return status;
 }
@@ -705,10 +765,37 @@ test "argument parsing" {
     const c7 = try parseArgs(a, &.{ "dkman", "-l", "--", "-", "-x" });
     try t.expectEqual(@as(usize, 2), c7.words.len);
 
+    // Companion commands, by the name they are started under.
+    try t.expectEqual(Mode.whatis, (try parseArgs(a, &.{ "/usr/bin/whatis", "ls" })).mode);
+    try t.expectEqual(Mode.apropos, (try parseArgs(a, &.{ "apropos", "-a", "x", "y" })).mode);
+    const w = try parseArgs(a, &.{ "apropos", "-w", "x*" });
+    try t.expectEqual(whatis.Mode.wildcard, w.match.?);
+    try t.expectEqual(whatis.Mode.exact, (try parseArgs(a, &.{ "whatis", "-e", "x" })).match.?);
+    try t.expectEqual(Mode.where, (try parseArgs(a, &.{ "manpath", "-q" })).mode);
+    try t.expectEqual(Mode.update_index, (try parseArgs(a, &.{ "mandb", "-q", "-C", "x" })).mode);
+    try t.expectEqual(Mode.version, (try parseArgs(a, &.{ "mandb", "--version" })).mode);
+    // Options that do nothing here are accepted; typeset output is refused.
+    const c8 = try parseArgs(a, &.{ "man", "-d", "-C", "conf", "-mfoo", "-c", "ls" });
+    try t.expectEqual(@as(usize, 1), c8.words.len);
+    try t.expectError(error.Unsupported, parseArgs(a, &.{ "man", "-t", "ls" }));
+    try t.expectError(error.Unsupported, parseArgs(a, &.{ "man", "-Tps", "ls" }));
+
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--bogus" }));
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "-Z" }));
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--width" }));
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--width", "x" }));
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "-s" }));
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--all=1" }));
+}
+
+test "MANOPT goes before the arguments, for man only" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const out = try withManopt(a, &.{ "man", "ls" }, " -a  -s 3 ");
+    try std.testing.expectEqual(@as(usize, 5), out.len);
+    try std.testing.expectEqualStrings("-a", out[1]);
+    try std.testing.expectEqualStrings("ls", out[4]);
+    try std.testing.expectEqual(@as(usize, 2), (try withManopt(a, &.{ "whatis", "ls" }, "-a")).len);
+    try std.testing.expectEqual(@as(usize, 2), (try withManopt(a, &.{ "man", "ls" }, null)).len);
 }

@@ -45,16 +45,15 @@ only; no `-s`, `-a`, `-M`, `-L`, `-V`; piped output contained Markdown markers;
 7. **ASCII output when the locale is not UTF-8**, as man does; `--ascii` forces
    it.
 
-8. **Regular expressions come from regex-zig** (`../regex-zig`, the engine of
-   Core Utils), not from dkman: a path dependency in `build.zig.zon`, with
-   `Options.ignore_case`, the Perl dialect and its default limits (so a
-   hostile pattern ends in an error, treated as "no match"). A word that does
-   not compile is searched for as plain text. **review:** a path dependency
-   cannot be fetched by others; switch to a release URL and hash once
-   regex-zig publishes one. regex-zig has no POSIX ERE dialect yet (see its
-   `SPEC.md`); apropos patterns written for man-db's POSIX syntax mostly work
-   in the Perl syntax. Shell wildcards for `--wildcard` are in `glob.zig`
-   because regex-zig does not cover them.
+8. **Regular expressions come from regex-zig** (release 0.1.0, fetched by URL
+   like md-zig and gtroff-zig): the new `.posix_ere` dialect, ignoring case,
+   with its default limits, so a hostile pattern ends in an error that is
+   treated as "no match". A word that does not compile is searched for as
+   plain text. regex-zig gained that dialect for this (see its
+   `docs/compatibility/posix_ere.md`); it is not yet checked against
+   `regcomp`, and it is leftmost-first, which cannot change whether a word
+   matches. Shell wildcards for `--wildcard` are in `glob.zig` because
+   regex-zig does not cover them.
 9. **Page names ignore case by default**, as in man-db (`-I` to match case).
 10. **A miss suggests names** within one or two typos (swapping neighbours
     counts as one), only the closest group, none for names of two letters or

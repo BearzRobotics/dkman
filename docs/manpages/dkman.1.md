@@ -66,8 +66,8 @@ and a leading section operand (`dkman 3 printf`) select a section.
 
 `-r`, `--regex`, `--wildcard`, `--exact`
 : How `-f` and `-k` compare words. `--regex`: a regular expression, found
-  anywhere (Perl syntax, from regex-zig; a pattern that takes too long counts as
-  no match). `--wildcard`: a shell wildcard (`*`, `?`, `[a-c]`) that must match the
+  anywhere (POSIX extended syntax with the GNU `\w \s \b` escapes, from
+  regex-zig; a pattern that takes too long counts as no match). `--wildcard`: a shell wildcard (`*`, `?`, `[a-c]`) that must match the
   whole name or a whole word of the description. `--exact`: the whole name or a
   whole word. The default for `-f` is `--exact`, for `-k` `--regex`.
 
@@ -189,9 +189,10 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
   pages, not the layout. Text is not justified or hyphenated.
 - bzip2 and lzma pages are read by running the system's `bzip2` and `xz`
   programs; gzip, xz and zstd are read in process.
-- Regular expressions use the Perl syntax of regex-zig (POSIX ERE is not
-  implemented there yet, so `[[:alpha:]]` and `{n,m}` forms of ERE may differ).
-  `-K` reads every page and matches text, not expressions.
+- Regular expressions are POSIX extended (regex-zig 0.1.0), but the engine is
+  leftmost-first and lacks `\<`, `\>` and `[[.x.]]`; as dkman only asks whether a
+  word matches, this makes no difference to the results. `-K` matches text, not
+  expressions.
 - Pages are not cached as `cat` pages and `mandb` databases are not read: dkman
   keeps its own index.
 - `-b` needs a terminal 70 columns wide or more to show the preview.

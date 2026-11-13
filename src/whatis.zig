@@ -299,7 +299,7 @@ pub fn listing(gpa: Allocator, entries: []const Entry) Allocator.Error![]u8 {
 pub const Mode = enum {
     /// The whole name (or, for descriptions, a whole word) is equal.
     exact,
-    /// A regular expression (regex-zig, Perl syntax) found anywhere. A word that is
+    /// A regular expression (regex-zig, POSIX extended syntax) found anywhere. A word that is
     /// not a valid expression is searched for literally.
     regex,
     /// A shell wildcard matching the whole name (or a whole word).
@@ -321,7 +321,7 @@ pub const Matcher = struct {
         var m: Matcher = .{ .word = word, .mode = mode, .ignore_case = ignore_case };
         if (mode == .regex) {
             const re = try arena.create(regex.Regex);
-            if (regex.Regex.compile(arena, word, .{ .ignore_case = true }, null)) |compiled| {
+            if (regex.Regex.compile(arena, word, .{ .dialect = .posix_ere, .ignore_case = true }, null)) |compiled| {
                 re.* = compiled;
                 m.searcher = try re.searcher(arena);
             } else |err| switch (err) {

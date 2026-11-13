@@ -12,8 +12,10 @@
             .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.4.0/gtroff-0.4.0.tar.gz",
             .hash = "gtroff-0.4.0-7kuxtVvsAgAZUjSOnC2wm3MBFgOisiFInypeVs9iwDPr",
         },
-        // Local checkout until regex-zig has a release to fetch by URL.
-        .regex = .{ .path = "../regex-zig" },
+        .regex = .{
+            .url = "https://github.com/BearzRobotics/regex-zig/releases/download/v0.1.0/regex-0.1.0.tar.gz",
+            .hash = "regex-0.1.0-bWvIn6EWAQDs13WV5vROGvUJ1qwtaqozgvdCibzmh7ZZ",
+        },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "completions", "test", "LICENSE", "README.md" },
 }
