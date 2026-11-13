@@ -85,12 +85,59 @@ pub fn loadXz(gpa: Allocator, input: *Io.Reader) Error![]u8 {
     };
 }
 
+/// Largest zstd window accepted: the default limit of the reference decoder
+/// (2^27 bytes). A bigger one is `error.BadCompression`.
+const zstd_window_max: usize = 1 << 27;
+
+/// The window size a zstd frame needs, from the start of the frame (RFC 8878
+/// section 3.1.1.1: magic number, frame header descriptor, then the window
+/// descriptor or, for a single-segment frame, the content size). Null when the
+/// bytes are not a frame header.
+pub fn zstdWindow(head: []const u8) ?u64 {
+    if (head.len < 6 or !std.mem.eql(u8, head[0..4], &.{ 0x28, 0xB5, 0x2F, 0xFD })) return null;
+    const descriptor = head[4];
+    const single_segment = descriptor & 0x20 != 0;
+    if (!single_segment) {
+        // Window_Descriptor: 3 bits of mantissa, 5 of exponent.
+        const w = head[5];
+        const base: u64 = @as(u64, 1) << @intCast(10 + (w >> 3));
+        return base + (base / 8) * (w & 7);
+    }
+    // Single segment: the window is the content size, which follows the
+    // dictionary id (0, 1, 2 or 4 bytes).
+    const dict_len: usize = switch (descriptor & 3) {
+        0 => 0,
+        1 => 1,
+        2 => 2,
+        else => 4,
+    };
+    const fcs_len: usize = switch (descriptor >> 6) {
+        0 => 1,
+        1 => 2,
+        2 => 4,
+        else => 8,
+    };
+    const at = 5 + dict_len;
+    if (head.len < at + fcs_len) return null;
+    var size: u64 = 0;
+    for (head[at .. at + fcs_len], 0..) |byte, i| size |= @as(u64, byte) << @intCast(8 * i);
+    if (fcs_len == 2) size += 256;
+    return size;
+}
+
 /// Reads everything from `input` and decompresses it as zstd.
 pub fn loadZstd(gpa: Allocator, input: *Io.Reader) Error![]u8 {
-    const window = std.compress.zstd.default_window_len;
+    const head = input.peek(14) catch |err| switch (err) {
+        error.EndOfStream => input.buffered(),
+        error.ReadFailed => return error.ReadFailed,
+    };
+    const needed = zstdWindow(head) orelse return error.BadCompression;
+    if (needed > zstd_window_max) return error.BadCompression;
+    // The decoder's buffer holds the window and one block.
+    const window: usize = @max(@as(usize, @intCast(needed)), 4096);
     const buffer = try gpa.alloc(u8, window + std.compress.zstd.block_size_max);
     defer gpa.free(buffer);
-    var dec: std.compress.zstd.Decompress = .init(input, buffer, .{ .window_len = window });
+    var dec: std.compress.zstd.Decompress = .init(input, buffer, .{ .window_len = @intCast(window) });
     return dec.reader.allocRemaining(gpa, .limited(max_bytes)) catch |err| switch (err) {
         error.StreamTooLong => error.PageTooLarge,
         error.OutOfMemory => error.OutOfMemory,
@@ -153,4 +200,35 @@ test "Compression.detect goes by magic bytes" {
     try t.expectEqual(Compression.zstd, Compression.detect("a.1.gz", &.{ 0x28, 0xB5, 0x2F, 0xFD }));
     try t.expectEqual(Compression.lzma, Compression.detect("a.1.lzma", "x"));
     try t.expectEqual(Compression.none, Compression.detect("a.1", ".TH"));
+}
+
+test "zstd frames with a large declared window and the window size reader" {
+    const t = std.testing;
+    // `zstd --ultra -22` declares a 128 MiB window even for a tiny input.
+    const big = [_]u8{ 0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x88, 0x31, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x0a, 0x53, 0x88, 0xbd, 0x91 };
+    try t.expectEqual(@as(?u64, 1 << 27), zstdWindow(&big));
+    var r: Io.Reader = .fixed(&big);
+    const out = try loadZstd(t.allocator, &r);
+    defer t.allocator.free(out);
+    try t.expectEqualStrings("hello\n", out);
+
+    // Compressing from a pipe: a 2 MiB window declared.
+    const small = [_]u8{ 0x28, 0xb5, 0x2f, 0xfd, 0x04, 0x58, 0x31, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x0a, 0x53, 0x88, 0xbd, 0x91 };
+    try t.expectEqual(@as(?u64, 1 << 21), zstdWindow(&small));
+    // Compressing a file records its size, and the frame is single-segment:
+    // the window is the 6 bytes of content.
+    const single = [_]u8{ 0x28, 0xb5, 0x2f, 0xfd, 0x24, 0x06, 0x31, 0x00, 0x00, 0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x0a, 0x53, 0x88, 0xbd, 0x91 };
+    try t.expectEqual(@as(?u64, 6), zstdWindow(&single));
+    var r3: Io.Reader = .fixed(&single);
+    const one = try loadZstd(t.allocator, &r3);
+    defer t.allocator.free(one);
+    try t.expectEqualStrings("hello\n", one);
+
+    try t.expectEqual(@as(?u64, null), zstdWindow("not zstd at all"));
+    try t.expectEqual(@as(?u64, null), zstdWindow(&.{ 0x28, 0xB5 }));
+    // A window beyond the limit is refused, not allocated.
+    var huge = big;
+    huge[5] = 0xF8; // exponent 31: 2 GiB
+    var r2: Io.Reader = .fixed(&huge);
+    try t.expectError(error.BadCompression, loadZstd(t.allocator, &r2));
 }

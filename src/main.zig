@@ -437,6 +437,8 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
         const wanted: []const []const u8 = if (cfg.sections.len > 0) cfg.sections else if (section) |sec| &.{sec} else &.{};
         var found: []const paths.Page = try paths.findAll(ctx.arena, ctx.io, ctx.dirs, ns.name, wanted, ctx.order, ctx.ignore_case);
         if (cfg.extension) |ext| found = try withExtension(ctx.arena, found, ext);
+        // No file of that name: a page may declare the name in its NAME line.
+        if (found.len == 0 and cfg.extension == null) found = try declaredNames(ctx, ns.name, wanted);
         if (found.len == 0) {
             if (wanted.len == 1) {
                 try diag(ctx.io, "No manual entry for {s} in section {s}\n", .{ ns.name, wanted[0] });
@@ -445,7 +447,9 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
             status = exit_not_found;
             continue;
         }
-        const chosen = if (cfg.all) found else found[0..1];
+        var chosen = if (cfg.all) found else found[0..1];
+        // Pages that only redirect (links, `.so`) stand for their target, as in man-db.
+        if (cfg.mode == .where or cfg.all) chosen = try resolveRedirects(ctx, chosen);
         if (cfg.mode == .where) {
             for (chosen) |pg| try printLine(ctx.io, pg.path);
             continue;
@@ -461,6 +465,43 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
         }
     }
     return status;
+}
+
+/// Pages whose NAME line declares `name` (`isastream` in `unimplemented.2`),
+/// from the index, in the order pages are preferred.
+fn declaredNames(ctx: Ctx, name: []const u8, sections: []const []const u8) ![]const paths.Page {
+    const entries = try loadIndex(ctx, false);
+    const hits = try whatis.lookup(ctx.arena, entries, name, .exact, ctx.ignore_case, sections);
+    var pages: std.ArrayList(paths.Page) = .empty;
+    for (hits) |e| {
+        var seen = false;
+        for (pages.items) |p| if (std.mem.eql(u8, p.path, e.path)) {
+            seen = true;
+        };
+        if (!seen) try pages.append(ctx.arena, .{ .name = e.name, .section = e.section, .path = e.path, .dir_index = 0 });
+    }
+    paths.sortByPreference(pages.items, if (sections.len > 0) sections else ctx.order);
+    return pages.items;
+}
+
+/// Replaces each page by the file its symbolic link or `.so` redirects lead to, and drops
+/// repeats. A page that cannot be read stays as it is.
+fn resolveRedirects(ctx: Ctx, pages: []const paths.Page) ![]const paths.Page {
+    var out: std.ArrayList(paths.Page) = .empty;
+    for (pages) |pg| {
+        var final = pg;
+        final.path = try paths.followLinks(ctx.arena, ctx.io, pg.path);
+        if (page_mod.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, final.path)) |loaded| {
+            defer loaded.deinit(ctx.gpa);
+            final.path = try ctx.arena.dupe(u8, loaded.path);
+        } else |_| {}
+        var seen = false;
+        for (out.items) |p| if (std.mem.eql(u8, p.path, final.path)) {
+            seen = true;
+        };
+        if (!seen) try out.append(ctx.arena, final);
+    }
+    return out.items;
 }
 
 /// Pages whose section carries the extension: `perl` keeps `3perl`.

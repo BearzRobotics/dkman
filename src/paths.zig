@@ -301,6 +301,25 @@ pub fn parseSections(arena: Allocator, text: []const u8) Allocator.Error![]const
     return out.items;
 }
 
+/// The file a symbolic link names, followed to the end (at most 8 links), as
+/// man-db shows it: `lroundf.3.gz -> lround.3.gz` is `.../lround.3.gz`. A path
+/// that is not a link is returned as it is. Only the last component is
+/// resolved, so a manual directory that is itself a link keeps its name.
+pub fn followLinks(arena: Allocator, io: Io, path: []const u8) Allocator.Error![]const u8 {
+    var cur = path;
+    for (0..8) |_| {
+        var buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = Io.Dir.cwd().readLink(io, cur, &buf) catch return cur;
+        const target = buf[0..n];
+        if (std.fs.path.isAbsolute(target)) {
+            cur = try arena.dupe(u8, target);
+        } else {
+            cur = try std.fs.path.join(arena, &.{ std.fs.path.dirname(cur) orelse ".", target });
+        }
+    }
+    return cur;
+}
+
 /// If the page is only a `.so FILE` redirect (comments and blank lines aside),
 /// the FILE it names.
 pub fn soTarget(content: []const u8) ?[]const u8 {
@@ -488,4 +507,23 @@ test "deriveManpath follows PATH, the map and the mandatory list" {
     // Nothing found: the built-in defaults.
     const none = try deriveManpath(a, io, null, .{});
     try t.expectEqual(default_dirs.len, none.len);
+}
+
+test "followLinks follows a chain of links and leaves plain files alone" {
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "man1");
+    try tmp.dir.writeFile(io, .{ .sub_path = "man1/real.1", .data = "x" });
+    try tmp.dir.symLink(io, "real.1", "man1/mid.1", .{});
+    try tmp.dir.symLink(io, "mid.1", "man1/top.1", .{});
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const top = try std.fs.path.join(a, &.{ root, "man1", "top.1" });
+    const real = try std.fs.path.join(a, &.{ root, "man1", "real.1" });
+    try t.expectEqualStrings(real, try followLinks(a, io, top));
+    try t.expectEqualStrings(real, try followLinks(a, io, real));
 }
