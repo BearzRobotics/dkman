@@ -53,16 +53,25 @@ and a leading section operand (`dkman 3 printf`) select a section.
 : Write HTML instead of terminal text, to standard output.
 
 `-w`, `--where`, `--path`
-: Print the path of the page instead of showing it. Without a name, print the
-  manual directories.
+: Print the path of the page instead of showing it. A page that is a symbolic
+  link or only says `.so other` stands for the file it leads to, as in man-db.
+  Without a name, print the manual directories.
 
 `-f`, `--whatis NAME...`
-: One line for every page called NAME: `name (section) - description`.
+: One line for every page called NAME: `name (section) - description`. A page
+  is found by its file's name and by every name its NAME section declares. A
+  page that is a link or a `.so` stub to another is listed under its own name.
+  A page file called exactly NAME takes the place of the pages that only
+  declare the name. Lines are cut to the terminal width and end in `...`; the
+  name column is 20 wide, as in man-db.
 
 `-k`, `--apropos WORD...`
 : List pages whose name or description matches any of the words, ignoring case.
   Each word is a regular expression (`-r`, the default). A word that is not a
   valid expression is searched for as text.
+
+`-l`, `--long` (as `whatis` or `apropos`)
+: Do not cut lines to the width.
 
 `-r`, `--regex`, `--wildcard`, `--exact`
 : How `-f` and `-k` compare words. `--regex`: a regular expression, found
@@ -129,6 +138,15 @@ A name containing a slash is taken as a path. Short options can be combined
 (`-aw`) and take their value attached or as the next word (`-s3`, `-s 3`). `--`
 ends the options.
 
+# COMPANION COMMANDS
+
+Started as `man`, `whatis`, `apropos`, `manpath` or `mandb`, dkman acts as the
+man-db command of that name: `whatis` is `-f`, `apropos` is `-k`, `manpath` is
+`-w` without a name, `mandb` is `--update-index`. In `whatis` and `apropos`,
+`-w` is `--wildcard`, `-e` is `--exact`, `-r` is `--regex`, `-l` is `--long`.
+`mandb` and `manpath` accept and ignore man-db's other options. `-V` and `-h`
+work in all of them. `zig build -Dinstall-as-man` installs the commands.
+
 # EXIT STATUS
 
 0 on success, 1 for a usage error, 2 if a page could not be read, 16 if no page
@@ -194,6 +212,8 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
   word matches, this makes no difference to the results. `-K` matches text, not
   expressions.
 - Pages are not cached as `cat` pages and `mandb` databases are not read: dkman
-  keeps its own index.
+  keeps its own index, built from the NAME sections. It agrees with man-db's
+  `whatis` on most pages (142 of 150 sampled names on one machine, the rest
+  differing mostly where the two databases were built from different files).
 - `-b` needs a terminal 70 columns wide or more to show the preview.
 - Output encoding is UTF-8 or ASCII only (`-E` is ignored).

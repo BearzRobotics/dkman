@@ -66,6 +66,8 @@ const Config = struct {
     all: bool = false,
     /// mandb -q: no output.
     quiet: bool = false,
+    /// whatis -l / apropos -l: do not cut lines to the terminal width.
+    long: bool = false,
     match_case: bool = false,
     extension: ?[]const u8 = null,
     html: bool = false,
@@ -82,7 +84,7 @@ const Config = struct {
 
 const ParseError = error{ Usage, Unsupported };
 
-const Opt = enum { unsupported, match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
+const Opt = enum { long_lines, unsupported, match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
 
 const OptSpec = struct { short: u8 = 0, long: []const u8 = "", opt: Opt, value: bool = false };
 
@@ -148,7 +150,7 @@ fn lookupShort(prog: Prog, c: u8) ?OptSpec {
     if (prog == .whatis or prog == .apropos) switch (c) {
         'w' => return .{ .short = 'w', .long = "wildcard", .opt = .wildcard },
         'e' => return .{ .short = 'e', .long = "exact", .opt = .exact },
-        'l' => return .{ .short = 'l', .long = "long", .opt = .ignored },
+        'l' => return .{ .short = 'l', .long = "long", .opt = .long_lines },
         else => {},
     };
     for (option_table) |o| if (o.short == c) return o;
@@ -259,6 +261,7 @@ fn apply(cfg: *Config, opt: Opt, value: ?[]const u8) (ParseError || Allocator.Er
         .ascii => cfg.ascii = true,
         .help => return error.Usage,
         .ignored => {},
+        .long_lines => cfg.long = true,
         .unsupported => return error.Unsupported,
     }
 }
@@ -530,12 +533,12 @@ fn runWhatis(ctx: Ctx, cfg: Config) !u8 {
     const entries = try loadIndex(ctx, false);
     const sections = cfg.sections;
     if (cfg.mode == .apropos) {
-        const hits = try whatis.keywords(ctx.arena, entries, cfg.words, cfg.all, cfg.match orelse .regex, sections);
+        const hits = try whatis.oneEach(ctx.arena, try whatis.keywords(ctx.arena, entries, cfg.words, cfg.all, cfg.match orelse .regex, sections));
         if (hits.len == 0) {
             try diag(ctx.io, "{s}: nothing appropriate.\n", .{cfg.words[0]});
             return exit_not_found;
         }
-        const text = try whatis.listing(ctx.gpa, hits);
+        const text = try whatis.listing(ctx.gpa, hits, if (cfg.long) 0 else ctx.opts.width);
         defer ctx.gpa.free(text);
         try display(ctx, text);
         return 0;
@@ -544,13 +547,13 @@ fn runWhatis(ctx: Ctx, cfg: Config) !u8 {
     for (cfg.words) |w| {
         const name = paths.splitNameSection(w);
         const secs: []const []const u8 = if (name.section) |s| &.{s} else sections;
-        const hits = try whatis.lookup(ctx.arena, entries, name.name, cfg.match orelse .exact, ctx.ignore_case, secs);
+        const hits = try whatis.oneEach(ctx.arena, try whatis.lookup(ctx.arena, entries, name.name, cfg.match orelse .exact, ctx.ignore_case, secs));
         if (hits.len == 0) {
             try diag(ctx.io, "{s}: nothing appropriate.\n", .{name.name});
             status = exit_not_found;
             continue;
         }
-        const text = try whatis.listing(ctx.gpa, hits);
+        const text = try whatis.listing(ctx.gpa, hits, if (cfg.long) 0 else ctx.opts.width);
         defer ctx.gpa.free(text);
         try pager.writeStdout(ctx.io, text);
     }
@@ -819,6 +822,7 @@ test "argument parsing" {
     try t.expectEqual(Mode.update_index, (try parseArgs(a, &.{ "mandb", "-q", "-C", "x" })).mode);
     try t.expectEqual(Mode.version, (try parseArgs(a, &.{ "mandb", "--version" })).mode);
     try t.expect((try parseArgs(a, &.{ "mandb", "-q" })).quiet);
+    try t.expect((try parseArgs(a, &.{ "whatis", "-l", "x" })).long);
     // Options that do nothing here are accepted; typeset output is refused.
     const c8 = try parseArgs(a, &.{ "man", "-d", "-C", "conf", "-mfoo", "-c", "ls" });
     try t.expectEqual(@as(usize, 1), c8.words.len);

@@ -62,6 +62,28 @@ only; no `-s`, `-a`, `-M`, `-L`, `-V`; piped output contained Markdown markers;
     name or a description; description matches rank above letters merely found
     in order in a name, and below any match inside a name.
 
+12. **The index follows man-db's records** (checked against man-db 2.13.1 on
+    the same page tree with `test/tools/compare_man.sh` and by comparing
+    `whatis` output): one entry per page file, listed under the file's name;
+    the names the NAME section declares are further keys, except for links and
+    `.so` stubs, which stand for their own name only; a NAME section with several
+    `name - description` lines gives the page the line that declares its file
+    name; lookups let a file called exactly the name win over declaring pages;
+    listings keep the first page of each name and section, pad the name column
+    to 20 and cut to the terminal width. `man -w`/`-a` follow links and `.so`
+    and, with no file of that name, find pages that declare it. Result on 800
+    random names: `man -w` agrees with man-db on all; `whatis` output agrees on
+    142 of 150 (the rest are mostly pages whose NAME text differs between the
+    two programs or a stale man-db database); `apropos` result counts are
+    within about 5%.
+13. **Companion commands by `argv[0]`**: `whatis`, `apropos`, `manpath`, `mandb`
+    are the same program (see the man page, COMPANION COMMANDS). `MANOPT` is
+    honored for `man`. `-t` and `-T` are refused.
+14. **zstd frames declare a window**; the buffer is sized from the frame header,
+    up to 128 MiB (the reference decoder's default limit). Found by
+    `test/tools/compress_roundtrip.sh` (2000 recompressed pages, no failures
+    after the fix).
+
 ## Not done
 
 Justification and hyphenation, POSIX ERE syntax,
