@@ -43,9 +43,13 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{ .name = "dkman", .root_module = mod });
     b.installArtifact(exe);
 
-    // Also install the program as `man`, to replace man(1): `-Dinstall-as-man`.
-    if (b.option(bool, "install-as-man", "Also install the program as `man`") orelse false) {
-        b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_sub_path = "man" }).step);
+    // `-Dinstall-as-man` also installs the commands man-db has: dkman acts as
+    // whatis, apropos, manpath or mandb by the name it is started under. They
+    // are copies; a package may make them symbolic links to dkman.
+    if (b.option(bool, "install-as-man", "Also install man, whatis, apropos, manpath and mandb") orelse false) {
+        for ([_][]const u8{ "man", "whatis", "apropos", "manpath", "mandb" }) |name| {
+            b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_sub_path = name }).step);
+        }
     }
 
     // The manual page (Markdown: dkman reads it), and shell completions.

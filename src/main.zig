@@ -64,6 +64,8 @@ const Config = struct {
     pager: bool = true,
     pager_cmd: ?[]const u8 = null,
     all: bool = false,
+    /// mandb -q: no output.
+    quiet: bool = false,
     match_case: bool = false,
     extension: ?[]const u8 = null,
     html: bool = false,
@@ -170,6 +172,7 @@ fn parseArgs(arena: Allocator, args: []const [:0]const u8) (ParseError || Alloca
         .manpath, .mandb => {
             cfg.mode = if (prog == .manpath) .where else .update_index;
             for (args[1..]) |a| {
+                if (std.mem.eql(u8, a, "-q") or std.mem.eql(u8, a, "--quiet")) cfg.quiet = true;
                 if (std.mem.eql(u8, a, "-V") or std.mem.eql(u8, a, "--version")) cfg.mode = .version;
                 if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help") or std.mem.eql(u8, a, "-?")) return error.Usage;
             }
@@ -387,7 +390,7 @@ fn run(init: std.process.Init) !u8 {
         .show, .where => runShow(ctx, cfg),
         .whatis, .apropos => runWhatis(ctx, cfg),
         .global_apropos => runGlobal(ctx, cfg),
-        .update_index => runUpdate(ctx),
+        .update_index => runUpdate(ctx, cfg),
         .browse => runBrowse(ctx, cfg),
     };
 }
@@ -547,13 +550,13 @@ fn runGlobal(ctx: Ctx, cfg: Config) !u8 {
     return 0;
 }
 
-fn runUpdate(ctx: Ctx) !u8 {
+fn runUpdate(ctx: Ctx, cfg: Config) !u8 {
     if (ctx.cache_file == null) {
         try diag(ctx.io, "dkman: no cache directory (set HOME or XDG_CACHE_HOME)\n", .{});
         return exit_failed;
     }
     const entries = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_file, true, null);
-    try printLine(ctx.io, try std.fmt.allocPrint(ctx.arena, "{d} names indexed in {s}", .{ entries.len, ctx.cache_file.? }));
+    if (!cfg.quiet) try printLine(ctx.io, try std.fmt.allocPrint(ctx.arena, "{d} names indexed in {s}", .{ entries.len, ctx.cache_file.? }));
     return 0;
 }
 
@@ -774,6 +777,7 @@ test "argument parsing" {
     try t.expectEqual(Mode.where, (try parseArgs(a, &.{ "manpath", "-q" })).mode);
     try t.expectEqual(Mode.update_index, (try parseArgs(a, &.{ "mandb", "-q", "-C", "x" })).mode);
     try t.expectEqual(Mode.version, (try parseArgs(a, &.{ "mandb", "--version" })).mode);
+    try t.expect((try parseArgs(a, &.{ "mandb", "-q" })).quiet);
     // Options that do nothing here are accepted; typeset output is refused.
     const c8 = try parseArgs(a, &.{ "man", "-d", "-C", "conf", "-mfoo", "-c", "ls" });
     try t.expectEqual(@as(usize, 1), c8.words.len);
