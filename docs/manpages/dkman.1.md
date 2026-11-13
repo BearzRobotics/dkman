@@ -6,15 +6,18 @@ dkman - find, search and show manual pages and Markdown documents
 
     dkman [options] [SECTION] NAME...
     dkman [options] -l FILE...
-    dkman -k WORD
-    dkman -f [WORD]
+    dkman -f NAME...
+    dkman -k WORD...
+    dkman -K WORD...
+    dkman -b [WORD]
 
 # DESCRIPTION
 
 `dkman` looks for manual pages in the traditional directories, picks the reader
 from the file name and content, and shows the result through a pager. Pages may
-be gzip compressed. Markdown documents (`NAME.SECTION.md`) are found like any
-other page, so a project can install its own documentation next to the system's.
+be compressed with gzip, xz, zstd, bzip2 or lzma. Markdown documents
+(`NAME.SECTION.md`) are found like any other page, so a project can install its
+own documentation next to the system's.
 
 Classic man(7) and mdoc(7) pages are read by gtroff-zig and drawn with the same
 renderer as Markdown. Section bodies are indented like groff's terminal output,
@@ -23,18 +26,37 @@ registers are handled. Layout is still approximate (text is not justified and
 tables are drawn as grids). A page that only says `.so man1/other.1` shows the
 page it names.
 
+The page is chosen by section order, then by directory order. `NAME(SECTION)`
+and a leading section operand (`dkman 3 printf`) select a section.
+
 # OPTIONS
 
-`-l FILE`
+`-l`, `--local-file FILE`
 : Show a file given by path. `-` reads standard input.
 
-`-w`
-: Print the path of the page instead of showing it.
+`-s`, `-S`, `--sections LIST`
+: Only look in these sections. LIST is separated by colons or commas, and its
+  order is the order they are tried in. `3` includes `3p`.
 
-`-k WORD`
-: List pages whose name contains WORD, as `name(section)` and path.
+`-a`, `--all`
+: Show every matching page, not only the first. With `-k`, a page must match
+  all the words.
 
-`-f [WORD]`
+`-w`, `--where`, `--path`
+: Print the path of the page instead of showing it. Without a name, print the
+  manual directories.
+
+`-f`, `--whatis NAME...`
+: One line for every page called NAME: `name (section) - description`.
+
+`-k`, `--apropos WORD...`
+: List pages whose name or description contains any of the words, ignoring
+  case.
+
+`-K`, `--global-apropos WORD...`
+: List pages whose text contains all of the words. Reads every page: slow.
+
+`-b`, `--browse [WORD]`
 : Browse pages. The search box and the matching pages are on the left, a
   preview of the selected page is on the right. WORD is the first search text.
   Several words must all match. Keys: `Up`/`Down` (`Ctrl-P`/`Ctrl-N`) select,
@@ -42,59 +64,112 @@ page it names.
   page in the pager and returns here afterwards, `Esc` or `Ctrl-C` leaves.
   Needs a terminal.
 
-`--width N`
-: Wrap at N columns. Default: `COLUMNS`, else 80.
+`-M`, `--manpath PATH`
+: Colon separated manual directories, instead of `MANPATH`.
 
-`--no-color`
-: No ANSI styles (pages are otherwise shown in color: headings yellow, options
-  and commands green, arguments cyan, code magenta, page references bold
-  magenta). They are also off when standard output is not a terminal or
-  `NO_COLOR` is set to a non-empty value.
+`-L`, `--locale LOCALE`
+: Prefer pages in this language (`de_DE.UTF-8` looks in `DIR/de_DE`, `DIR/de`,
+  then `DIR`). Default: the first of `LC_ALL`, `LC_MESSAGES`, `LANG`.
+
+`-P`, `--pager COMMAND`
+: Pager command. Default: `MANPAGER`, `PAGER`, then `less`.
+
+`--width N`
+: Wrap at N columns. Default: `MANWIDTH`, `COLUMNS`, the terminal's width, 80.
+
+`--ascii`, `-7`
+: ASCII characters only: dashes, quotes and bullets are replaced, boxes are drawn
+  with `+-|`. This is the default unless the locale (`LC_ALL`, `LC_CTYPE`,
+  `LANG`) names UTF-8.
+
+`--color`, `--no-color`
+: Pages are shown in color on a terminal (headings yellow, options and commands
+  green, arguments cyan, code magenta, page references bold magenta). `--color`
+  forces it; `--no-color` turns it off. It is also off when standard output is
+  not a terminal or `NO_COLOR` is set to a non-empty value. Without color the
+  text is plain, as with man(1).
 
 `--no-pager`
 : Write to standard output. The pager is only used on a terminal.
 
-`-h`, `--help`
-: Print usage to standard error and exit with 2.
+`--update-index`
+: Rebuild the cache of page descriptions that `-f` and `-k` read.
 
-A name containing a slash is taken as a path. A first operand that looks like a
-section (`3`, `3p`, `n`) followed by a name selects that section.
+`-V`, `--version`
+: Print the version.
+
+`-h`, `--help`, `-?`
+: Print usage to standard error and exit with 1.
+
+`-E`, `--nh`, `--nj`
+: Accepted and ignored, for scripts written for man(1).
+
+A name containing a slash is taken as a path. Short options can be combined
+(`-aw`) and take their value attached or as the next word (`-s3`, `-s 3`). `--`
+ends the options.
 
 # EXIT STATUS
 
-0 on success, 1 if a page was not found or could not be read, 2 for a usage
-error.
+0 on success, 1 for a usage error, 2 if a page could not be read, 16 if no page
+(or no `-f`/`-k`/`-K` match) was found. These are man-db's codes.
 
 # ENVIRONMENT
 
 `MANPATH`
-: Colon separated manual directories. An empty entry stands for the defaults.
+: Colon separated manual directories. An empty entry stands for the directories
+  below. If it is not set, they are found as man-db does: every directory of
+  `PATH` implies one (through `MANPATH_MAP` in `/etc/manpath.config`, or
+  `.../bin` giving `.../man` and `.../share/man`), then the `MANDATORY_MANPATH`
+  entries. Only directories that exist are used.
 
-`PAGER`
-: Pager command, split at blanks, no shell. Default `less -R`. If it cannot be
-  started the text is written to standard output.
+`MANSECT`
+: Colon separated sections in the order they are tried. Default: the `SECTION`
+  line of `/etc/manpath.config`, else `1 n l 8 3 0 2 5 4 9 6 7`.
 
-`COLUMNS`, `NO_COLOR`
-: See `--width` and `--no-color`.
+`MANPAGER`, `PAGER`
+: Pager command, split at blanks, no shell. A `less` without an option that
+  passes colors through gets `-R`. If the pager cannot be started the text is
+  written to standard output.
+
+`MANWIDTH`, `COLUMNS`, `NO_COLOR`
+: See `--width` and `--color`.
+
+`LC_ALL`, `LC_MESSAGES`, `LC_CTYPE`, `LANG`
+: Language of the pages and character set of the output.
+
+`XDG_CACHE_HOME`, `HOME`
+: The page descriptions are cached in `$XDG_CACHE_HOME/dkman/` or
+  `~/.cache/dkman/`. The cache is rebuilt when a manual directory is added to or
+  removed from (or `--update-index` is given).
 
 # FILES
 
+`/etc/manpath.config`, `/etc/man_db.conf`
+: Read for `MANDATORY_MANPATH`, `MANPATH_MAP` and `SECTION`.
+
 `/usr/local/man`, `/usr/local/share/man`, `/usr/share/man`, `/usr/man`
-: Default manual directories. Each holds `man1` ... `man9`, `mann`, `manl` and
-  subsections such as `man3p`.
+: Manual directories used when nothing else is found. Each holds `man1` ...
+  `man9`, `mann`, `manl` and subsections such as `man3p`.
 
 # EXAMPLES
 
     dkman 3 printf
+    dkman 'printf(3)'
+    dkman -a printf
     dkman -l README.md
+    dkman -f printf
     dkman -k zstd
-    dkman -f
+    dkman -b
 
 # LIMITATIONS
 
 - Output is checked against groff by comparing the words of a sample of installed
-  pages, not the layout.
-- Search matches page names only; there is no `whatis` database yet.
-- `-f` needs a terminal 70 columns wide or more to show the preview.
-- Without a section, the page is chosen in the order `1 n l 8 3 0 2 5 4 9 6 7`,
-  then by directory order.
+  pages, not the layout. Text is not justified or hyphenated.
+- bzip2 and lzma pages are read by running the system's `bzip2` and `xz`
+  programs; gzip, xz and zstd are read in process.
+- `-k` and `-f` do not support regular expressions or wildcards; `-K` reads
+  every page.
+- Pages are not cached as `cat` pages and `mandb` databases are not read: dkman
+  keeps its own index.
+- `-b` needs a terminal 70 columns wide or more to show the preview.
+- Output encoding is UTF-8 or ASCII only (`-E` is ignored).
