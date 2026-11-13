@@ -1,0 +1,28 @@
+#compdef dkman
+# zsh completion for dkman. Page names come from dkman's own index (-k '').
+_dkman_pages() {
+    local -a names
+    names=(${(f)"$(dkman -k '' 2>/dev/null | sed 's/ (.*//' | sort -u)"})
+    _describe 'manual page' names
+}
+_arguments -s \
+    '(-l --local-file)'{-l,--local-file}'[show a file]' \
+    '(-w --where --path)'{-w,--where,--path}'[print the path of the page]' \
+    '(-f --whatis)'{-f,--whatis}'[one-line descriptions of the pages]' \
+    '(-k --apropos)'{-k,--apropos}'[pages whose name or description matches]' \
+    '(-K --global-apropos)'{-K,--global-apropos}'[pages whose text matches]' \
+    '(-b --browse)'{-b,--browse}'[browse pages]' \
+    '(-a --all)'{-a,--all}'[show every matching page]' \
+    '(-s -S --sections)'{-s+,-S+,--sections=}'[only these sections]:sections' \
+    '(-M --manpath)'{-M+,--manpath=}'[manual directories]:path:_files -/' \
+    '(-L --locale)'{-L+,--locale=}'[language of the pages]:locale' \
+    '(-P --pager)'{-P+,--pager=}'[pager command]:command:_command_names' \
+    '--width=[line width]:columns' \
+    '(--no-color)--color[always use colors]' \
+    '(--color)--no-color[no colors]' \
+    '--no-pager[write to standard output]' \
+    '(-7 --ascii)'{-7,--ascii}'[ASCII characters only]' \
+    '--update-index[rebuild the description cache]' \
+    '(-V --version)'{-V,--version}'[print the version]' \
+    '(-h --help)'{-h,--help}'[print usage]' \
+    '*:manual page:_dkman_pages'

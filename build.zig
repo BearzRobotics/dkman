@@ -39,6 +39,17 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{ .name = "dkman", .root_module = mod });
     b.installArtifact(exe);
 
+    // Also install the program as `man`, to replace man(1): `-Dinstall-as-man`.
+    if (b.option(bool, "install-as-man", "Also install the program as `man`") orelse false) {
+        b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_sub_path = "man" }).step);
+    }
+
+    // The manual page (Markdown: dkman reads it), and shell completions.
+    b.installFile("docs/manpages/dkman.1.md", "share/man/man1/dkman.1.md");
+    b.installFile("completions/dkman.bash", "share/bash-completion/completions/dkman");
+    b.installFile("completions/_dkman", "share/zsh/site-functions/_dkman");
+    b.installFile("completions/dkman.fish", "share/fish/vendor_completions.d/dkman.fish");
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = lib })).step);
     const unit = b.addTest(.{ .root_module = mod });

@@ -13,5 +13,5 @@
             .hash = "gtroff-0.4.0-7kuxtVvsAgAZUjSOnC2wm3MBFgOisiFInypeVs9iwDPr",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "test", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "completions", "test", "LICENSE", "README.md" },
 }
