@@ -1,5 +1,5 @@
 //! dkman as a library: finding manual pages and Markdown documents, reading
-//! them (gzip aware), detecting their format and turning them into an
+//! them (gzip, xz, zstd, bzip2 and lzma aware), detecting their format and turning them into an
 //! `md.Document` or terminal text. The `dkman` program is a thin wrapper.
 //!
 //! Nothing here reads the environment or prints: callers pass `MANPATH`,
@@ -15,6 +15,8 @@ pub const format = @import("format.zig");
 pub const render = @import("render.zig");
 pub const search = @import("search.zig");
 pub const theme = @import("theme.zig");
+pub const page = @import("page.zig");
+pub const whatis = @import("whatis.zig");
 
 pub const Format = format.Format;
 pub const Page = paths.Page;
@@ -26,4 +28,6 @@ test {
     _ = render;
     _ = search;
     _ = theme;
+    _ = page;
+    _ = whatis;
 }

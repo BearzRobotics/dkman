@@ -1,6 +1,7 @@
 //! dkman: find, search and show manual pages and Markdown documents.
 
 const std = @import("std");
+const build_options = @import("build_options");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const paths = @import("paths.zig");
@@ -9,65 +10,151 @@ const tui = @import("tui.zig");
 const render = @import("render.zig");
 const pager = @import("pager.zig");
 const search = @import("search.zig");
+const whatis = @import("whatis.zig");
 
 const usage =
     \\usage: dkman [options] [SECTION] NAME...
     \\       dkman [options] -l FILE...
-    \\       dkman -k WORD
-    \\       dkman -f [WORD]
+    \\       dkman -f NAME...        (whatis)
+    \\       dkman -k WORD...        (apropos)
+    \\       dkman -b [WORD]         (browse)
     \\
-    \\  -l FILE      show a file (a path, or - for standard input)
-    \\  -w           print the path of the page instead of showing it
-    \\  -k WORD      list pages whose name contains WORD
-    \\  -f [WORD]    browse pages: search on the left, preview on the right
-    \\               (WORD is the first search text)
-    \\  --width N    wrap at N columns (default: $COLUMNS or 80)
-    \\  --no-color   no ANSI styles (also off when not on a terminal or NO_COLOR is set)
-    \\  --no-pager   write to standard output
-    \\  -h, --help   this text
+    \\  -s, -S LIST      only these sections (colon or comma separated, in this order)
+    \\  -a, --all        show every matching page (with -k: all words must match)
+    \\  -l, --local-file show a file (a path, or - for standard input)
+    \\  -w, --where      print the path of the page instead of showing it
+    \\  -f, --whatis     one-line descriptions of the pages called NAME
+    \\  -k, --apropos    pages whose name or description contains a WORD
+    \\  -K, --global-apropos  pages whose text contains a WORD
+    \\  -b, --browse     browse pages: search on the left, preview on the right
+    \\  -M, --manpath P  manual directories (colon separated) instead of $MANPATH
+    \\  -L, --locale L   language of the pages (default from LC_ALL, LC_MESSAGES, LANG)
+    \\  -P, --pager CMD  pager command (default: $MANPAGER, $PAGER, less)
+    \\  --width N        wrap at N columns (default: $MANWIDTH, $COLUMNS, the terminal, 80)
+    \\  --ascii          ASCII characters only (default unless the locale is UTF-8)
+    \\  --color          always use ANSI styles
+    \\  --no-color       no ANSI styles (also when not on a terminal or NO_COLOR is set)
+    \\  --no-pager       write to standard output
+    \\  --update-index   rebuild the cache of page descriptions
+    \\  -V, --version    print the version
+    \\  -h, --help       this text
     \\
 ;
 
-const Mode = enum { show, local, where, keyword, browse };
+/// Exit codes of man-db: 0 success, 1 usage or syntax, 2 operation failed,
+/// 16 no page found.
+const exit_usage: u8 = 1;
+const exit_failed: u8 = 2;
+const exit_not_found: u8 = 16;
+
+const Mode = enum { show, local, where, whatis, apropos, global_apropos, browse, update_index, version };
 
 const Config = struct {
     mode: Mode = .show,
     width: ?usize = null,
-    color: bool = true,
+    /// null: decide from the terminal.
+    color: ?bool = null,
+    ascii: ?bool = null,
     pager: bool = true,
+    pager_cmd: ?[]const u8 = null,
+    all: bool = false,
+    manpath: ?[]const u8 = null,
+    locale: ?[]const u8 = null,
+    /// From `-s`: the sections to look in, in order.
+    sections: []const []const u8 = &.{},
+    /// A leading section operand (`dkman 3 printf`).
     section: ?[]const u8 = null,
     words: []const []const u8 = &.{},
 };
 
 const ParseError = error{Usage};
 
+const Opt = enum { local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
+
+const OptSpec = struct { short: u8 = 0, long: []const u8 = "", opt: Opt, value: bool = false };
+
+const option_table = [_]OptSpec{
+    .{ .short = 'l', .long = "local-file", .opt = .local },
+    .{ .short = 'w', .long = "where", .opt = .where },
+    .{ .long = "path", .opt = .where },
+    .{ .short = 'f', .long = "whatis", .opt = .whatis },
+    .{ .short = 'k', .long = "apropos", .opt = .apropos },
+    .{ .short = 'K', .long = "global-apropos", .opt = .global },
+    .{ .short = 'b', .long = "browse", .opt = .browse },
+    .{ .short = 'a', .long = "all", .opt = .all },
+    .{ .short = 's', .long = "sections", .opt = .sections, .value = true },
+    .{ .short = 'S', .opt = .sections, .value = true },
+    .{ .short = 'M', .long = "manpath", .opt = .manpath, .value = true },
+    .{ .short = 'P', .long = "pager", .opt = .pager, .value = true },
+    .{ .short = 'L', .long = "locale", .opt = .locale, .value = true },
+    .{ .long = "width", .opt = .width, .value = true },
+    .{ .long = "color", .opt = .color },
+    .{ .long = "no-color", .opt = .no_color },
+    .{ .long = "no-pager", .opt = .no_pager },
+    .{ .short = '7', .long = "ascii", .opt = .ascii },
+    .{ .long = "update-index", .opt = .update_index },
+    .{ .short = 'V', .long = "version", .opt = .version },
+    .{ .short = 'h', .long = "help", .opt = .help },
+    .{ .short = '?', .long = "usage", .opt = .help },
+    // Accepted for compatibility with man(1); dkman does not hyphenate or justify.
+    .{ .long = "nh", .opt = .ignored },
+    .{ .long = "nj", .opt = .ignored },
+    .{ .short = 'E', .long = "encoding", .opt = .ignored, .value = true },
+};
+
+fn lookupShort(c: u8) ?OptSpec {
+    for (option_table) |o| if (o.short == c) return o;
+    return null;
+}
+
+fn lookupLong(name: []const u8) ?OptSpec {
+    for (option_table) |o| if (o.long.len > 0 and std.mem.eql(u8, o.long, name)) return o;
+    return null;
+}
+
 fn parseArgs(arena: Allocator, args: []const [:0]const u8) (ParseError || Allocator.Error)!Config {
     var cfg: Config = .{};
     var words: std.ArrayList([]const u8) = .empty;
     var i: usize = 1;
+    var only_words = false;
     while (i < args.len) : (i += 1) {
         const a: []const u8 = args[i];
-        if (std.mem.eql(u8, a, "-l")) {
-            cfg.mode = .local;
-        } else if (std.mem.eql(u8, a, "-w")) {
-            cfg.mode = .where;
-        } else if (std.mem.eql(u8, a, "-k")) {
-            cfg.mode = .keyword;
-        } else if (std.mem.eql(u8, a, "-f")) {
-            cfg.mode = .browse;
-        } else if (std.mem.eql(u8, a, "--no-color")) {
-            cfg.color = false;
-        } else if (std.mem.eql(u8, a, "--no-pager")) {
-            cfg.pager = false;
-        } else if (std.mem.eql(u8, a, "--width")) {
-            i += 1;
-            if (i >= args.len) return error.Usage;
-            cfg.width = std.fmt.parseInt(usize, args[i], 10) catch return error.Usage;
-        } else if (std.mem.eql(u8, a, "-h") or std.mem.eql(u8, a, "--help")) {
-            return error.Usage;
-        } else if (a.len > 1 and a[0] == '-') {
-            return error.Usage;
-        } else try words.append(arena, a);
+        if (only_words or a.len < 2 or a[0] != '-') {
+            try words.append(arena, a);
+            continue;
+        }
+        if (std.mem.eql(u8, a, "--")) {
+            only_words = true;
+            continue;
+        }
+        if (a[1] == '-') {
+            const eq = std.mem.findScalar(u8, a, '=');
+            const spec = lookupLong(a[2 .. eq orelse a.len]) orelse return error.Usage;
+            var value: ?[]const u8 = if (eq) |e| a[e + 1 ..] else null;
+            if (spec.value and value == null) {
+                i += 1;
+                if (i >= args.len) return error.Usage;
+                value = args[i];
+            } else if (!spec.value and value != null) return error.Usage;
+            try apply(&cfg, spec.opt, value);
+            continue;
+        }
+        // A cluster of short options: `-aw`, `-s3`, `-s 3`.
+        var j: usize = 1;
+        while (j < a.len) : (j += 1) {
+            const spec = lookupShort(a[j]) orelse return error.Usage;
+            if (spec.value) {
+                var value: []const u8 = a[j + 1 ..];
+                if (value.len == 0) {
+                    i += 1;
+                    if (i >= args.len) return error.Usage;
+                    value = args[i];
+                }
+                try apply(&cfg, spec.opt, value);
+                break;
+            }
+            try apply(&cfg, spec.opt, null);
+        }
     }
     // `dkman 3 printf`: a leading section number before the page name.
     if ((cfg.mode == .show or cfg.mode == .where) and words.items.len >= 2 and isSection(words.items[0])) {
@@ -78,122 +165,391 @@ fn parseArgs(arena: Allocator, args: []const [:0]const u8) (ParseError || Alloca
     return cfg;
 }
 
+fn apply(cfg: *Config, opt: Opt, value: ?[]const u8) (ParseError || Allocator.Error)!void {
+    switch (opt) {
+        .local => cfg.mode = .local,
+        .where => cfg.mode = .where,
+        .whatis => cfg.mode = .whatis,
+        .apropos => cfg.mode = .apropos,
+        .global => cfg.mode = .global_apropos,
+        .browse => cfg.mode = .browse,
+        .update_index => cfg.mode = .update_index,
+        .version => cfg.mode = .version,
+        .all => cfg.all = true,
+        .sections => cfg.sections = try splitList(value.?),
+        .manpath => cfg.manpath = value,
+        .pager => cfg.pager_cmd = value,
+        .locale => cfg.locale = value,
+        .width => cfg.width = std.fmt.parseInt(usize, value.?, 10) catch return error.Usage,
+        .color => cfg.color = true,
+        .no_color => cfg.color = false,
+        .no_pager => cfg.pager = false,
+        .ascii => cfg.ascii = true,
+        .help => return error.Usage,
+        .ignored => {},
+    }
+}
+
+/// Section lists are short; split into a fixed buffer owned by the process.
+var list_storage: [32][]const u8 = undefined;
+fn splitList(text: []const u8) ParseError![]const []const u8 {
+    var n: usize = 0;
+    var it = std.mem.tokenizeAny(u8, text, ":, \t");
+    while (it.next()) |w| {
+        if (n == list_storage.len) return error.Usage;
+        list_storage[n] = w;
+        n += 1;
+    }
+    return list_storage[0..n];
+}
+
 fn isSection(s: []const u8) bool {
     return s.len > 0 and s.len <= 4 and (std.ascii.isDigit(s[0]) or s[0] == 'n' or s[0] == 'l') and
         std.ascii.isAlphanumeric(s[s.len - 1]);
 }
 
+/// Everything the modes share.
+const Ctx = struct {
+    gpa: Allocator,
+    arena: Allocator,
+    io: Io,
+    dirs: []const []const u8,
+    /// The manual directories without the locale's, for `-w` alone.
+    base_dirs: []const []const u8,
+    /// Order sections are tried in.
+    order: []const []const u8,
+    opts: render.Options,
+    use_pager: bool,
+    pager_cmd: []const u8,
+    cache_file: ?[]const u8,
+};
+
 pub fn main(init: std.process.Init) !u8 {
+    return run(init) catch |err| switch (err) {
+        // `dkman ls | head`: the reader went away; that is not a failure.
+        error.BrokenPipe => 0,
+        else => |e| e,
+    };
+}
+
+fn run(init: std.process.Init) !u8 {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
+    const env = init.environ_map;
     const args = try init.minimal.args.toSlice(arena);
 
     const cfg = parseArgs(arena, args) catch |err| switch (err) {
         error.Usage => {
             try Io.File.stderr().writeStreamingAll(io, usage);
-            return 2;
+            return exit_usage;
         },
         error.OutOfMemory => return error.OutOfMemory,
     };
 
+    if (cfg.mode == .version) {
+        try printLine(io, "dkman " ++ build_options.version);
+        return 0;
+    }
+
     const stdout_tty = Io.File.stdout().isTty(io) catch false;
-    const no_color_env = if (init.environ_map.get("NO_COLOR")) |v| v.len > 0 else false;
+    const no_color_env = if (env.get("NO_COLOR")) |v| v.len > 0 else false;
+    const use_color = cfg.color orelse (stdout_tty and !no_color_env);
     const opts: render.Options = .{
-        .width = cfg.width orelse widthFromEnv(init.environ_map.get("COLUMNS")),
-        .color = cfg.color and stdout_tty and !no_color_env,
+        .width = cfg.width orelse try widthFor(env, stdout_tty),
+        .color = use_color,
+        .ascii = cfg.ascii orelse !utf8Locale(env),
     };
-    const use_pager = cfg.pager and stdout_tty;
-    const pager_cmd = init.environ_map.get("PAGER") orelse "less -R";
 
-    const dirs = try paths.searchDirs(arena, init.environ_map.get("MANPATH"));
+    // Manual directories: -M, MANPATH, or derived from PATH and the config file.
+    const conf = try readConf(gpa, arena, io);
+    const derived = try paths.deriveManpath(arena, io, env.get("PATH"), conf);
+    const base_dirs = try paths.searchDirs(arena, cfg.manpath orelse env.get("MANPATH"), derived);
+    const dirs = try paths.withLocale(arena, base_dirs, cfg.locale orelse localeFromEnv(env));
 
-    switch (cfg.mode) {
-        .local => {
-            if (cfg.words.len == 0) return usageError(io);
-            var status: u8 = 0;
-            for (cfg.words) |w| {
-                if (!try showFile(gpa, arena, io, dirs, w, opts, use_pager, pager_cmd)) status = 1;
-            }
-            return status;
-        },
-        .show, .where => {
-            if (cfg.words.len == 0) return usageError(io);
-            var status: u8 = 0;
-            for (cfg.words) |name| {
-                // A name with a slash is a path, as with man(1).
-                if (std.mem.indexOfScalar(u8, name, '/') != null) {
-                    if (cfg.mode == .where) {
-                        try printLine(io, name);
-                    } else if (!try showFile(gpa, arena, io, dirs, name, opts, use_pager, pager_cmd)) status = 1;
-                    continue;
-                }
-                const page = try paths.find(arena, io, dirs, name, cfg.section) orelse {
-                    try diag(io, "dkman: no manual entry for {s}\n", .{name});
-                    status = 1;
-                    continue;
-                };
-                if (cfg.mode == .where) {
-                    try printLine(io, page.path);
-                } else if (!try showFile(gpa, arena, io, dirs, page.path, opts, use_pager, pager_cmd)) status = 1;
-            }
-            return status;
-        },
-        .keyword => {
-            if (cfg.words.len != 1) return usageError(io);
-            const pages = try paths.scan(arena, io, dirs, null, null);
-            var hits: std.ArrayList(paths.Page) = .empty;
-            for (pages) |p| {
-                if (std.mem.find(u8, p.name, cfg.words[0]) != null) try hits.append(arena, p);
-            }
-            if (hits.items.len == 0) {
-                try diag(io, "dkman: nothing appropriate for {s}\n", .{cfg.words[0]});
-                return 1;
-            }
-            const menu = try search.menuText(gpa, hits.items);
-            defer gpa.free(menu);
-            try pager.writeStdout(io, menu);
+    const order: []const []const u8 = if (cfg.sections.len > 0)
+        cfg.sections
+    else if (nonEmpty(env.get("MANSECT"))) |ms|
+        try paths.parseSections(arena, ms)
+    else if (conf.sections.len > 0)
+        conf.sections
+    else
+        &paths.default_sections;
+
+    const ctx: Ctx = .{
+        .gpa = gpa,
+        .arena = arena,
+        .io = io,
+        .dirs = dirs,
+        .base_dirs = base_dirs,
+        .order = order,
+        .opts = opts,
+        .use_pager = cfg.pager and stdout_tty,
+        .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")) orelse "less",
+        .cache_file = try cacheFile(arena, env, dirs),
+    };
+
+    return switch (cfg.mode) {
+        .version => unreachable,
+        .local => runLocal(ctx, cfg),
+        .show, .where => runShow(ctx, cfg),
+        .whatis, .apropos => runWhatis(ctx, cfg),
+        .global_apropos => runGlobal(ctx, cfg),
+        .update_index => runUpdate(ctx),
+        .browse => runBrowse(ctx, cfg),
+    };
+}
+
+// ------------------------------------------------------------------- modes
+
+fn runLocal(ctx: Ctx, cfg: Config) !u8 {
+    if (cfg.words.len == 0) return usageError(ctx.io);
+    var status: u8 = 0;
+    for (cfg.words) |w| {
+        const text = try renderPath(ctx, w) orelse {
+            status = exit_failed;
+            continue;
+        };
+        defer ctx.gpa.free(text);
+        try display(ctx, text);
+    }
+    return status;
+}
+
+fn runShow(ctx: Ctx, cfg: Config) !u8 {
+    if (cfg.words.len == 0) {
+        // `man -w` alone: where the pages are looked for.
+        if (cfg.mode == .where) {
+            try printLine(ctx.io, try std.mem.join(ctx.arena, ":", ctx.base_dirs));
             return 0;
-        },
-        .browse => {
-            const pages = try paths.scan(arena, io, dirs, null, null);
-            if (pages.len == 0) {
-                try diag(io, "dkman: no manual pages found in the search path\n", .{});
-                return 1;
+        }
+        return usageError(ctx.io);
+    }
+    var status: u8 = 0;
+    for (cfg.words) |arg| {
+        // A name with a slash is a path, as with man(1).
+        if (std.mem.indexOfScalar(u8, arg, '/') != null) {
+            if (cfg.mode == .where) {
+                try printLine(ctx.io, arg);
+            } else if (try renderPath(ctx, arg)) |text| {
+                defer ctx.gpa.free(text);
+                try display(ctx, text);
+            } else status = exit_failed;
+            continue;
+        }
+        const ns = paths.splitNameSection(arg);
+        const section = cfg.section orelse ns.section;
+        const wanted: []const []const u8 = if (cfg.sections.len > 0) cfg.sections else if (section) |sec| &.{sec} else &.{};
+        const found = try paths.findAll(ctx.arena, ctx.io, ctx.dirs, ns.name, wanted, ctx.order);
+        if (found.len == 0) {
+            if (wanted.len == 1) {
+                try diag(ctx.io, "No manual entry for {s} in section {s}\n", .{ ns.name, wanted[0] });
+            } else try diag(ctx.io, "No manual entry for {s}\n", .{ns.name});
+            status = exit_not_found;
+            continue;
+        }
+        const chosen = if (cfg.all) found else found[0..1];
+        if (cfg.mode == .where) {
+            for (chosen) |pg| try printLine(ctx.io, pg.path);
+            continue;
+        }
+        var text: std.ArrayList(u8) = .empty;
+        defer text.deinit(ctx.gpa);
+        for (chosen) |pg| {
+            const one = try renderPath(ctx, pg.path) orelse {
+                status = exit_failed;
+                continue;
+            };
+            defer ctx.gpa.free(one);
+            if (text.items.len > 0) try text.appendSlice(ctx.gpa, "\n");
+            try text.appendSlice(ctx.gpa, one);
+        }
+        if (text.items.len > 0) try display(ctx, text.items);
+    }
+    return status;
+}
+
+fn loadIndex(ctx: Ctx, force: bool) ![]whatis.Entry {
+    return whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_file, force, "dkman: building the page index (first use, or the manual directories changed)...\n");
+}
+
+fn runWhatis(ctx: Ctx, cfg: Config) !u8 {
+    if (cfg.words.len == 0) return usageError(ctx.io);
+    const entries = try loadIndex(ctx, false);
+    const sections = cfg.sections;
+    if (cfg.mode == .apropos) {
+        const hits = try whatis.keywords(ctx.arena, entries, cfg.words, cfg.all, sections);
+        if (hits.len == 0) {
+            try diag(ctx.io, "{s}: nothing appropriate.\n", .{cfg.words[0]});
+            return exit_not_found;
+        }
+        const text = try whatis.listing(ctx.gpa, hits);
+        defer ctx.gpa.free(text);
+        try display(ctx, text);
+        return 0;
+    }
+    var status: u8 = 0;
+    for (cfg.words) |w| {
+        const name = paths.splitNameSection(w);
+        const secs: []const []const u8 = if (name.section) |s| &.{s} else sections;
+        const hits = try whatis.exact(ctx.arena, entries, name.name, secs);
+        if (hits.len == 0) {
+            try diag(ctx.io, "{s}: nothing appropriate.\n", .{name.name});
+            status = exit_not_found;
+            continue;
+        }
+        const text = try whatis.listing(ctx.gpa, hits);
+        defer ctx.gpa.free(text);
+        try pager.writeStdout(ctx.io, text);
+    }
+    return status;
+}
+
+/// `-K`: pages whose text contains every word, found by reading them all.
+fn runGlobal(ctx: Ctx, cfg: Config) !u8 {
+    if (cfg.words.len == 0) return usageError(ctx.io);
+    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null);
+    search.sortByName(pages);
+    var hits: std.ArrayList(paths.Page) = .empty;
+    for (pages) |pg| {
+        if (cfg.sections.len > 0) {
+            var ok = false;
+            for (cfg.sections) |s| {
+                if (std.mem.startsWith(u8, pg.section, s)) ok = true;
             }
-            search.sortByName(pages);
-            var query: []const u8 = if (cfg.words.len > 0) cfg.words[0] else "";
-            var select: ?[]const u8 = null;
-            var status: u8 = 0;
-            // Back to the browser after each page, with the same search.
-            while (true) {
-                const chosen = tui.run(gpa, io, dirs, pages, .{ .color = opts.color, .query = query, .select = select }) catch |err| switch (err) {
-                    error.NotATerminal => {
-                        try diag(io, "dkman: -f needs a terminal; use dkman -k WORD instead\n", .{});
-                        return 1;
-                    },
-                    else => |e| return e,
-                } orelse return status;
-                defer gpa.free(chosen.path);
-                defer gpa.free(chosen.query);
-                query = try arena.dupe(u8, chosen.query);
-                select = try arena.dupe(u8, chosen.path);
-                status = if (try showFile(gpa, arena, io, dirs, chosen.path, opts, use_pager, pager_cmd)) 0 else 1;
-                if (!use_pager) return status;
-            }
-        },
+            if (!ok) continue;
+        }
+        var scratch_state = std.heap.ArenaAllocator.init(ctx.gpa);
+        defer scratch_state.deinit();
+        const text = page_mod.renderFile(ctx.gpa, scratch_state.allocator(), ctx.io, ctx.dirs, pg.path, .{ .width = 0 }) catch continue;
+        defer ctx.gpa.free(text);
+        var all_found = true;
+        for (cfg.words) |w| {
+            if (std.ascii.findIgnoreCase(text, w) == null) all_found = false;
+        }
+        if (all_found) try hits.append(ctx.arena, pg);
+    }
+    if (hits.items.len == 0) {
+        try diag(ctx.io, "{s}: nothing appropriate.\n", .{cfg.words[0]});
+        return exit_not_found;
+    }
+    const menu = try search.menuText(ctx.gpa, hits.items);
+    defer ctx.gpa.free(menu);
+    try display(ctx, menu);
+    return 0;
+}
+
+fn runUpdate(ctx: Ctx) !u8 {
+    if (ctx.cache_file == null) {
+        try diag(ctx.io, "dkman: no cache directory (set HOME or XDG_CACHE_HOME)\n", .{});
+        return exit_failed;
+    }
+    const entries = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_file, true, null);
+    try printLine(ctx.io, try std.fmt.allocPrint(ctx.arena, "{d} names indexed in {s}", .{ entries.len, ctx.cache_file.? }));
+    return 0;
+}
+
+fn runBrowse(ctx: Ctx, cfg: Config) !u8 {
+    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null);
+    if (pages.len == 0) {
+        try diag(ctx.io, "dkman: no manual pages found in the search path\n", .{});
+        return exit_not_found;
+    }
+    search.sortByName(pages);
+    var query: []const u8 = if (cfg.words.len > 0) cfg.words[0] else "";
+    var select: ?[]const u8 = null;
+    var status: u8 = 0;
+    // Back to the browser after each page, with the same search.
+    while (true) {
+        const chosen = tui.run(ctx.gpa, ctx.io, ctx.dirs, pages, .{ .color = ctx.opts.color, .query = query, .select = select }) catch |err| switch (err) {
+            error.NotATerminal => {
+                try diag(ctx.io, "dkman: -b needs a terminal; use dkman -k WORD instead\n", .{});
+                return exit_failed;
+            },
+            else => |e| return e,
+        } orelse return status;
+        defer ctx.gpa.free(chosen.path);
+        defer ctx.gpa.free(chosen.query);
+        query = try ctx.arena.dupe(u8, chosen.query);
+        select = try ctx.arena.dupe(u8, chosen.path);
+        if (try renderPath(ctx, chosen.path)) |text| {
+            defer ctx.gpa.free(text);
+            try display(ctx, text);
+            status = 0;
+        } else status = exit_failed;
+        if (!ctx.use_pager) return status;
     }
 }
 
+// ----------------------------------------------------------------- helpers
+
 fn usageError(io: Io) !u8 {
     try Io.File.stderr().writeStreamingAll(io, usage);
-    return 2;
+    return exit_usage;
 }
 
-fn widthFromEnv(columns: ?[]const u8) usize {
-    const c = columns orelse return 80;
-    const n = std.fmt.parseInt(usize, c, 10) catch return 80;
-    return if (n >= 20 and n <= 1000) n else 80;
+fn nonEmpty(s: ?[]const u8) ?[]const u8 {
+    const v = s orelse return null;
+    return if (v.len > 0) v else null;
+}
+
+/// Line length: `MANWIDTH`, `COLUMNS`, the terminal's width, else 80.
+fn widthFor(env: *const std.process.Environ.Map, tty: bool) !usize {
+    for ([_][]const u8{ "MANWIDTH", "COLUMNS" }) |name| {
+        if (nonEmpty(env.get(name))) |v| {
+            const n = std.fmt.parseInt(usize, v, 10) catch continue;
+            if (n >= 20 and n <= 1000) return n;
+        }
+    }
+    if (tty) {
+        const cols = tui.terminalSize().cols;
+        if (cols >= 20 and cols <= 1000) return cols;
+    }
+    return 80;
+}
+
+fn localeFromEnv(env: *const std.process.Environ.Map) ?[]const u8 {
+    for ([_][]const u8{ "LC_ALL", "LC_MESSAGES", "LANG" }) |name| {
+        if (nonEmpty(env.get(name))) |v| return v;
+    }
+    return null;
+}
+
+/// True when the locale's character set is UTF-8.
+fn utf8Locale(env: *const std.process.Environ.Map) bool {
+    for ([_][]const u8{ "LC_ALL", "LC_CTYPE", "LANG" }) |name| {
+        if (nonEmpty(env.get(name))) |v| {
+            return std.ascii.findIgnoreCase(v, "utf-8") != null or std.ascii.findIgnoreCase(v, "utf8") != null;
+        }
+    }
+    return false;
+}
+
+fn readConf(gpa: Allocator, arena: Allocator, io: Io) !paths.Conf {
+    _ = gpa;
+    for ([_][]const u8{ "/etc/manpath.config", "/etc/man_db.conf" }) |f| {
+        const text = Io.Dir.cwd().readFileAlloc(io, f, arena, .limited(1 << 20)) catch continue;
+        return paths.parseConf(arena, text);
+    }
+    return .{};
+}
+
+/// Where the page index lives: `$XDG_CACHE_HOME/dkman/` or `~/.cache/dkman/`,
+/// one file per set of manual directories.
+fn cacheFile(arena: Allocator, env: *const std.process.Environ.Map, dirs: []const []const u8) !?[]const u8 {
+    const base = if (nonEmpty(env.get("XDG_CACHE_HOME"))) |x|
+        try arena.dupe(u8, x)
+    else if (nonEmpty(env.get("HOME"))) |h|
+        try std.fs.path.join(arena, &.{ h, ".cache" })
+    else
+        return null;
+    var hash = std.hash.Wyhash.init(0);
+    for (dirs) |d| {
+        hash.update(d);
+        hash.update(":");
+    }
+    const name = try std.fmt.allocPrint(arena, "whatis-{x}", .{hash.final()});
+    return try std.fs.path.join(arena, &.{ base, "dkman", name });
 }
 
 fn printLine(io: Io, s: []const u8) !void {
@@ -207,23 +563,32 @@ fn diag(io: Io, comptime fmt: []const u8, args: anytype) !void {
     try Io.File.stderr().writeStreamingAll(io, msg);
 }
 
-/// Loads, renders and shows one file (`-` is standard input). Returns false
-/// after reporting an error to stderr.
-fn showFile(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, path: []const u8, opts: render.Options, use_pager: bool, pager_cmd: []const u8) !bool {
-    const text = page_mod.renderFile(gpa, arena, io, dirs, path, opts) catch |err| switch (err) {
+/// Loads and renders one file (`-` is standard input). Returns null after
+/// reporting an error to stderr; the caller owns the text.
+fn renderPath(ctx: Ctx, path: []const u8) !?[]u8 {
+    return page_mod.renderFile(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, path, ctx.opts) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
         error.BrokenRedirect => {
-            try diag(io, "dkman: {s} redirects to a page that was not found\n", .{path});
-            return false;
+            try diag(ctx.io, "dkman: {s} redirects to a page that was not found\n", .{path});
+            return null;
+        },
+        error.FileNotFound => {
+            try diag(ctx.io, "dkman: {s}: no such file\n", .{path});
+            return null;
+        },
+        error.DecompressorMissing => {
+            try diag(ctx.io, "dkman: cannot show {s}: the bzip2 or xz program is needed\n", .{path});
+            return null;
         },
         else => {
-            try diag(io, "dkman: cannot show {s}: {s}\n", .{ path, @errorName(err) });
-            return false;
+            try diag(ctx.io, "dkman: cannot show {s}: {s}\n", .{ path, @errorName(err) });
+            return null;
         },
     };
-    defer gpa.free(text);
+}
 
-    if (use_pager) try pager.show(gpa, io, pager_cmd, text) else try pager.writeStdout(io, text);
-    return true;
+fn display(ctx: Ctx, text: []const u8) !void {
+    if (ctx.use_pager) try pager.show(ctx.gpa, ctx.io, ctx.pager_cmd, text) else try pager.writeStdout(ctx.io, text);
 }
 
 test {
@@ -236,6 +601,7 @@ test {
     _ = @import("pager.zig");
     _ = @import("search.zig");
     _ = @import("theme.zig");
+    _ = @import("whatis.zig");
 }
 
 test "argument parsing" {
@@ -257,7 +623,29 @@ test "argument parsing" {
     try t.expectEqual(Mode.local, c3.mode);
     try t.expect(!c3.pager);
 
+    // Clusters, attached and separate values, long options with `=`.
+    const c4 = try parseArgs(a, &.{ "dkman", "-aw", "-s3:2", "ls" });
+    try t.expect(c4.all);
+    try t.expectEqual(Mode.where, c4.mode);
+    try t.expectEqual(@as(usize, 2), c4.sections.len);
+    try t.expectEqualStrings("2", c4.sections[1]);
+    const c5 = try parseArgs(a, &.{ "dkman", "-M", "/a:/b", "--pager=cat", "--locale", "de", "ls" });
+    try t.expectEqualStrings("/a:/b", c5.manpath.?);
+    try t.expectEqualStrings("cat", c5.pager_cmd.?);
+    try t.expectEqualStrings("de", c5.locale.?);
+    const c6 = try parseArgs(a, &.{ "dkman", "-f", "ls" });
+    try t.expectEqual(Mode.whatis, c6.mode);
+    try t.expectEqual(Mode.apropos, (try parseArgs(a, &.{ "dkman", "-k", "x" })).mode);
+    try t.expectEqual(Mode.browse, (try parseArgs(a, &.{ "dkman", "-b" })).mode);
+    try t.expectEqual(Mode.version, (try parseArgs(a, &.{ "dkman", "-V" })).mode);
+    // `--` ends the options; a lone `-` is a word (standard input).
+    const c7 = try parseArgs(a, &.{ "dkman", "-l", "--", "-", "-x" });
+    try t.expectEqual(@as(usize, 2), c7.words.len);
+
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--bogus" }));
+    try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "-Z" }));
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--width" }));
     try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--width", "x" }));
+    try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "-s" }));
+    try t.expectError(error.Usage, parseArgs(a, &.{ "dkman", "--all=1" }));
 }

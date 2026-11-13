@@ -1,7 +1,7 @@
 .{
     .name = .dkman,
     .fingerprint = 0xd0541858ce33b795,
-    .version = "0.3.1",
+    .version = "0.4.0",
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .md = .{

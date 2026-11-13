@@ -6,6 +6,9 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", @import("build.zig.zon").version);
+
     const md_dep = b.dependency("md", .{ .target = target, .optimize = optimize });
 
     const gtroff_dep = b.dependency("gtroff", .{ .target = target, .optimize = optimize });
@@ -27,6 +30,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .imports = &.{
+            .{ .name = "build_options", .module = options.createModule() },
             .{ .name = "md", .module = md_dep.module("md") },
             .{ .name = "gtroff", .module = gtroff_dep.module("gtroff") },
         },

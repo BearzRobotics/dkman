@@ -145,9 +145,9 @@ fn appendClipped(gpa: Allocator, out: *std.ArrayList(u8), s: []const u8, max: us
 
 // ----------------------------------------------------------------- terminal
 
-const Size = struct { rows: usize, cols: usize };
+pub const Size = struct { rows: usize, cols: usize };
 
-fn terminalSize() Size {
+pub fn terminalSize() Size {
     if (builtin.os.tag == .linux) {
         var ws: posix.winsize = undefined;
         const rc = std.os.linux.ioctl(1, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws));
@@ -179,8 +179,8 @@ const RawMode = struct {
         raw.lflag.ICANON = false;
         raw.lflag.ISIG = false;
         raw.lflag.IEXTEN = false;
-        raw.cc[@intFromEnum(std.os.linux.V.MIN)] = 1;
-        raw.cc[@intFromEnum(std.os.linux.V.TIME)] = 0;
+        raw.cc[@backingInt(std.os.linux.V.MIN)] = 1;
+        raw.cc[@backingInt(std.os.linux.V.TIME)] = 0;
         try posix.tcsetattr(0, .FLUSH, raw);
         return .{ .saved = saved };
     }
