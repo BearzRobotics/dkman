@@ -1,8 +1,9 @@
-//! The page browser behind `dkman -f`: a search box with the matching pages
+//! The page browser behind `dkman -b`: a search box with the matching pages
 //! on the left and a preview of the selected page on the right. It needs no
 //! other program; the terminal is driven with plain escape sequences.
 //!
-//!     Type          narrow the list (several words must all match)
+//!     Type          narrow the list (several words must all match; a word
+//!                   matches the page name or its one-line description)
 //!     Up/Down       move the selection (also Ctrl-P, Ctrl-N, Ctrl-K)
 //!     PgUp/PgDn     scroll the preview (also Ctrl-B, Ctrl-F)
 //!     Shift-Up/Down scroll the preview by one line
@@ -26,6 +27,10 @@ pub const Options = struct {
     query: []const u8 = "",
     /// A page path to select first, when it matches the query.
     select: ?[]const u8 = null,
+    /// One-line description of each page, in the order of `pages` (the
+    /// NAME line: see `whatis.zig`). Empty, or an empty string for a page
+    /// without one. Searched along with the names and shown above the preview.
+    descriptions: []const []const u8 = &.{},
 };
 
 pub const Result = struct {
@@ -68,11 +73,31 @@ pub fn score(hay: []const u8, term: []const u8) ?i32 {
     return 300 - @as(i32, @intCast(@min(gap, 250)));
 }
 
+/// Score of a word inside a page's description (lowercase): the word as a
+/// substring, better at the start of a word. Always below a match inside the
+/// name and above letters that merely appear in order in the name.
+pub fn scoreDescription(desc: []const u8, term: []const u8) ?i32 {
+    if (term.len == 0) return 0;
+    const at = std.mem.find(u8, desc, term) orelse return null;
+    const word_start = at == 0 or !std.ascii.isAlphanumeric(desc[at - 1]);
+    return if (word_start) 400 else 350;
+}
+
 /// Score of the whole query: every space separated word must match.
 pub fn scoreQuery(hay: []const u8, query_lower: []const u8) ?i32 {
+    return scoreEntry(hay, "", query_lower);
+}
+
+/// Like `scoreQuery`, but a word may also be found in `desc` (lowercase). The
+/// better of the two counts.
+pub fn scoreEntry(hay: []const u8, desc: []const u8, query_lower: []const u8) ?i32 {
     var total: i32 = 0;
     var it = std.mem.tokenizeScalar(u8, query_lower, ' ');
-    while (it.next()) |term| total += score(hay, term) orelse return null;
+    while (it.next()) |term| {
+        const in_name = score(hay, term);
+        const in_desc = scoreDescription(desc, term);
+        total += if (in_name) |n| @max(n, in_desc orelse n) else in_desc orelse return null;
+    }
     return total;
 }
 
@@ -202,6 +227,10 @@ const Tui = struct {
     color: bool,
     /// `name(section)` in lowercase, one per page.
     hay: [][]u8,
+    /// Descriptions in lowercase for searching, one per page, or empty.
+    desc_lower: [][]u8 = &.{},
+    /// Descriptions as written, same order, or empty.
+    descriptions: []const []const u8 = &.{},
 
     query: std.ArrayList(u8) = .empty,
     /// Indices into `pages`, best match first.
@@ -224,6 +253,8 @@ const Tui = struct {
     fn deinit(t: *Tui) void {
         for (t.hay) |h| t.gpa.free(h);
         t.gpa.free(t.hay);
+        for (t.desc_lower) |d| t.gpa.free(d);
+        t.gpa.free(t.desc_lower);
         t.query.deinit(t.gpa);
         t.hits.deinit(t.gpa);
         if (t.preview_text) |p| t.gpa.free(p);
@@ -278,7 +309,8 @@ const Tui = struct {
             var scored: std.ArrayList(Scored) = .empty;
             defer scored.deinit(t.gpa);
             for (t.hay, 0..) |h, i| {
-                if (scoreQuery(h, q)) |s| try scored.append(t.gpa, .{ .score = s, .index = @intCast(i) });
+                const d = if (i < t.desc_lower.len) t.desc_lower[i] else "";
+                if (scoreEntry(h, d, q)) |s| try scored.append(t.gpa, .{ .score = s, .index = @intCast(i) });
             }
             std.mem.sort(Scored, scored.items, {}, lessScored);
             try t.hits.ensureTotalCapacity(t.gpa, scored.items.len);
@@ -515,7 +547,11 @@ const Tui = struct {
                     const p = t.pages[pi];
                     var head: std.ArrayList(u8) = .empty;
                     defer head.deinit(gpa);
-                    try head.print(gpa, "{s}({s})  {s}", .{ p.name, p.section, p.path });
+                    try head.print(gpa, "{s}({s})", .{ p.name, p.section });
+                    if (pi < t.descriptions.len and t.descriptions[pi].len > 0) {
+                        try head.print(gpa, "  {s}", .{t.descriptions[pi]});
+                    }
+                    try head.print(gpa, "  {s}", .{p.path});
                     var tail: [16]u8 = undefined;
                     const pct: usize = if (t.maxScroll() == 0) 100 else t.preview_scroll * 100 / t.maxScroll();
                     const pct_text = std.fmt.bufPrint(&tail, "  {d}%", .{pct}) catch "";
@@ -569,8 +605,22 @@ pub fn run(gpa: Allocator, io: Io, dirs: []const []const u8, pages: []const path
         made = i + 1;
     }
 
-    var t: Tui = .{ .gpa = gpa, .io = io, .dirs = dirs, .pages = pages, .color = opts.color, .hay = hay };
+    var t: Tui = .{ .gpa = gpa, .io = io, .dirs = dirs, .pages = pages, .color = opts.color, .hay = hay, .descriptions = opts.descriptions };
+    // From here `t` owns `hay`.
     defer t.deinit();
+    if (opts.descriptions.len == pages.len) {
+        const lower = try gpa.alloc([]u8, pages.len);
+        var done: usize = 0;
+        errdefer {
+            for (lower[0..done]) |d| gpa.free(d);
+            gpa.free(lower);
+        }
+        for (opts.descriptions, 0..) |d, i| {
+            lower[i] = try std.ascii.allocLowerString(gpa, d);
+            done = i + 1;
+        }
+        t.desc_lower = lower;
+    }
     try t.query.appendSlice(gpa, opts.query);
     try t.refilter();
     if (opts.select) |s| t.select(s);
@@ -752,4 +802,19 @@ test "a multi-byte character is deleted whole" {
     _ = try tui.handle("a\xc3\xa9");
     _ = try tui.handle("\x7f");
     try t.expectEqualStrings("a", tui.query.items);
+}
+
+test "descriptions are searched, below name matches" {
+    const t = std.testing;
+    try t.expect(scoreEntry("zzz(1)", "format and print data", "print") != null);
+    try t.expect(scoreEntry("zzz(1)", "", "print") == null);
+    const in_name = scoreEntry("print(1)", "something", "print").?;
+    const in_desc = scoreEntry("zzz(1)", "print things", "print").?;
+    try t.expect(in_name > in_desc);
+    // A description hit outranks letters that only appear in order in the name.
+    const seq = scoreEntry("p_r_i_n_t(1)", "unrelated", "print").?;
+    try t.expect(in_desc > seq);
+    // Every word must match, in the name or the description.
+    try t.expect(scoreEntry("printf(3)", "formatted output conversion", "printf output") != null);
+    try t.expect(scoreEntry("printf(3)", "formatted output conversion", "printf zzz") == null);
 }
