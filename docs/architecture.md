@@ -25,6 +25,8 @@
 | `page.zig` | Loads one page for display (stdin, `.so` redirects, format) |
 | `pager.zig` | Splitting the pager command (`less` gets `-R`), piping text into it, falling back to stdout |
 
+`tools/md2man.zig` is a build-time program: `zig build` runs it over `docs/manpages/dkman.1.md` to make the installed `dkman.1` (man(7)). dkman started as `whatis`, `apropos`, `manpath` or `mandb` acts as man-db's command of that name (`main.zig`, `progOf`).
+
 Tests live next to the code (`zig build test`).
 
 ## Library use

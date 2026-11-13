@@ -52,8 +52,23 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    // The manual page (Markdown: dkman reads it), and shell completions.
-    b.installFile("docs/manpages/dkman.1.md", "share/man/man1/dkman.1.md");
+    // The manual page: the Markdown source is turned into man(7) by tools/md2man.zig.
+    const md2man = b.addExecutable(.{
+        .name = "md2man",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/md2man.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+            .imports = &.{.{ .name = "md", .module = b.dependency("md", .{ .target = b.graph.host }).module("md") }},
+        }),
+    });
+    const make_page = b.addRunArtifact(md2man);
+    make_page.addFileArg(b.path("docs/manpages/dkman.1.md"));
+    const page = make_page.addOutputFileArg("dkman.1");
+    make_page.addArgs(&.{ "DKMAN", "1", "dkman " ++ @import("build.zig.zon").version });
+    b.getInstallStep().dependOn(&b.addInstallFileWithDir(page, .prefix, "share/man/man1/dkman.1").step);
+
+    // Shell completions.
     b.installFile("completions/dkman.bash", "share/bash-completion/completions/dkman");
     b.installFile("completions/_dkman", "share/zsh/site-functions/_dkman");
     b.installFile("completions/dkman.fish", "share/fish/vendor_completions.d/dkman.fish");

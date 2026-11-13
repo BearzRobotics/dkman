@@ -19,10 +19,10 @@ layout is still approximate (text is not justified, tables are drawn as grids).
     zig-out/bin/dkman -f printf
     zig-out/bin/dkman -b
 
-Install (the program, its manual page as Markdown, and bash, zsh and fish completions):
+Install (the program, its manual page as man(7) generated from `docs/manpages/dkman.1.md`, and bash, zsh and fish completions):
 
     zig build -Doptimize=ReleaseSafe --prefix /usr/local
-    zig build -Doptimize=ReleaseSafe --prefix /usr/local -Dinstall-as-man   # also as `man`
+    zig build -Doptimize=ReleaseSafe --prefix /usr/local -Dinstall-as-man   # also as man, whatis, apropos, manpath, mandb
 
 The page index for `-f` and `-k` is built on first use (about a second) and cached
 in `~/.cache/dkman/`. Page names in the completions come from it.

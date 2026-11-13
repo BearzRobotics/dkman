@@ -17,5 +17,5 @@
             .hash = "regex-0.1.0-bWvIn6EWAQDs13WV5vROGvUJ1qwtaqozgvdCibzmh7ZZ",
         },
     },
-    .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "completions", "test", "LICENSE", "README.md" },
+    .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "tools", "completions", "test", "LICENSE", "README.md" },
 }
