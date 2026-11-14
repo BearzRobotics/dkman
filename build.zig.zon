@@ -1,16 +1,16 @@
 .{
     .name = .dkman,
     .fingerprint = 0xd0541858ce33b795,
-    .version = "0.4.0",
+    .version = "0.5.0",
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .md = .{
-            .url = "https://github.com/BearzRobotics/md-zig/releases/download/v0.4.0/md-0.4.0.tar.gz",
-            .hash = "md-0.4.0-V1LLYaYbCACWd9y-ASt5Xu-xkVQFKY8xJHGsUgXp9QYw",
+            .url = "https://github.com/BearzRobotics/md-zig/releases/download/v0.6.0/md-0.6.0.tar.gz",
+            .hash = "md-0.6.0-V1LLYbwzCAAG1ljiJ7E3lnTqu7RdxdzpVrjk3ISpPLh8",
         },
         .gtroff = .{
-            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.4.0/gtroff-0.4.0.tar.gz",
-            .hash = "gtroff-0.4.0-7kuxtVvsAgAZUjSOnC2wm3MBFgOisiFInypeVs9iwDPr",
+            .url = "https://github.com/BearzRobotics/gtroff-zig/releases/download/v0.5.0/gtroff-0.5.0.tar.gz",
+            .hash = "gtroff-0.5.0-7kuxtRf1AgC6Gk4hT4KOxt8WBrwgJreCd-968RofZu1N",
         },
         .regex = .{
             .url = "https://github.com/BearzRobotics/regex-zig/releases/download/v0.1.0/regex-0.1.0.tar.gz",

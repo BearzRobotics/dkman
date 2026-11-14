@@ -37,6 +37,7 @@ const usage =
     \\  -L, --locale L   language of the pages (default from LC_ALL, LC_MESSAGES, LANG)
     \\  -P, --pager CMD  pager command (default: $MANPAGER, $PAGER, less)
     \\  --width N        wrap at N columns (default: $MANWIDTH, $COLUMNS, the terminal, 80)
+    \\  --nj             do not justify the text (right margin ragged)
     \\  --ascii          ASCII characters only (default unless the locale is UTF-8)
     \\  --color          always use ANSI styles
     \\  --no-color       no ANSI styles (also when not on a terminal or NO_COLOR is set)
@@ -66,6 +67,8 @@ const Config = struct {
     all: bool = false,
     /// mandb -q: no output.
     quiet: bool = false,
+    /// --nj: leave the right margin ragged.
+    justify: bool = true,
     /// whatis -l / apropos -l: do not cut lines to the terminal width.
     long: bool = false,
     match_case: bool = false,
@@ -84,7 +87,7 @@ const Config = struct {
 
 const ParseError = error{ Usage, Unsupported };
 
-const Opt = enum { long_lines, unsupported, match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
+const Opt = enum { no_justify, long_lines, unsupported, match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
 
 const OptSpec = struct { short: u8 = 0, long: []const u8 = "", opt: Opt, value: bool = false };
 
@@ -120,7 +123,7 @@ const option_table = [_]OptSpec{
     .{ .short = '?', .long = "usage", .opt = .help },
     // Accepted for compatibility with man(1); dkman does not hyphenate or justify.
     .{ .long = "nh", .opt = .ignored },
-    .{ .long = "nj", .opt = .ignored },
+    .{ .long = "nj", .opt = .no_justify },
     .{ .short = 'E', .long = "encoding", .opt = .ignored, .value = true },
     .{ .short = 'C', .long = "config-file", .opt = .ignored, .value = true },
     .{ .short = 'm', .long = "systems", .opt = .ignored, .value = true },
@@ -262,6 +265,7 @@ fn apply(cfg: *Config, opt: Opt, value: ?[]const u8) (ParseError || Allocator.Er
         .help => return error.Usage,
         .ignored => {},
         .long_lines => cfg.long = true,
+        .no_justify => cfg.justify = false,
         .unsupported => return error.Unsupported,
     }
 }
@@ -358,6 +362,7 @@ fn run(init: std.process.Init) !u8 {
         .color = use_color,
         .ascii = cfg.ascii orelse !utf8Locale(env),
         .html = cfg.html,
+        .justify = cfg.justify,
     };
 
     // Manual directories: -M, MANPATH, or derived from PATH and the config file.
@@ -752,10 +757,6 @@ fn renderPath(ctx: Ctx, path: []const u8) !?[]u8 {
             try diag(ctx.io, "dkman: {s}: no such file\n", .{path});
             return null;
         },
-        error.DecompressorMissing => {
-            try diag(ctx.io, "dkman: cannot show {s}: the bzip2 or xz program is needed\n", .{path});
-            return null;
-        },
         else => {
             try diag(ctx.io, "dkman: cannot show {s}: {s}\n", .{ path, @errorName(err) });
             return null;
@@ -778,6 +779,7 @@ test {
     _ = @import("search.zig");
     _ = @import("theme.zig");
     _ = @import("whatis.zig");
+    _ = @import("bzip2.zig");
     _ = @import("glob.zig");
 }
 

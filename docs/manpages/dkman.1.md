@@ -15,7 +15,7 @@ dkman - find, search and show manual pages and Markdown documents
 
 `dkman` looks for manual pages in the traditional directories, picks the reader
 from the file name and content, and shows the result through a pager. Pages may
-be compressed with gzip, xz, zstd, bzip2 or lzma. Markdown documents
+be compressed with gzip, xz, zstd, bzip2 or lzma; all are decoded by dkman itself. Markdown documents
 (`NAME.SECTION.md`) are found like any other page, so a project can install its
 own documentation next to the system's.
 
@@ -211,9 +211,10 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
 # LIMITATIONS
 
 - Output is checked against groff by comparing the words of a sample of installed
-  pages, not the layout. Text is not justified or hyphenated.
-- bzip2 and lzma pages are read by running the system's `bzip2` and `xz`
-  programs; gzip, xz and zstd are read in process.
+  pages, and its layout line by line against man-db's. Text is justified like
+  groff's, but words are never hyphenated (groff's hyphenation patterns are
+  not part of dkman), so some lines break differently. `--nj` leaves the right
+  margin ragged.
 - Regular expressions are POSIX extended (regex-zig 0.1.0), but the engine is
   leftmost-first and lacks `\<`, `\>` and `[[.x.]]`; as dkman only asks whether a
   word matches, this makes no difference to the results. `-K` matches text, not

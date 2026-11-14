@@ -15,13 +15,13 @@ only; no `-s`, `-a`, `-M`, `-L`, `-V`; piped output contained Markdown markers;
 ## Decisions
 
 1. **Compression is found by magic bytes**, not by suffix (`source.zig`).
-   gzip, xz and zstd are decoded with `std.compress`. bzip2 is not in the
-   standard library, and lzma has no magic number: those two run the system
-   `bzip2` / `xz` with a fixed argument vector (no shell, path after `--`).
-   **review:** this is the first external program dkman runs besides the pager;
-   decision 0001 (4) said "no required external program". It is only needed
-   for those two rarely used formats; the alternative is to write a bzip2
-   decoder.
+   gzip, xz, zstd and LZMA-alone are decoded with `std.compress`; bzip2, which
+   the standard library lacks, by `bzip2.zig` (about 300 lines, written from the
+   bzip2 1.0.x format, with block and stream CRC checks). No external program
+   is run. archive.zig (github.com/muhammad-fiaz/archive.zig) was considered:
+   it has no bzip2, its "lzma" is a private codec with an LZMA-alone header
+   (its source says the payload is "not range-coded LZMA"), so it cannot read real
+   `.lzma` files, and it would add three dependencies.
 2. **`-f` is whatis, `-k` is apropos, the browser moved to `-b`.** This breaks
    `dkman -f` of 0.3.x (hence version 0.4.0). **review:** the other choice is
    keeping `-f` as browser and being incompatible with man for scripts.
@@ -86,11 +86,20 @@ only; no `-s`, `-a`, `-M`, `-L`, `-V`; piped output contained Markdown markers;
 
 ## Not done
 
-Justification and hyphenation, POSIX ERE syntax,
+Hyphenation (groff's patterns are GPL data), POSIX ERE syntax,
 `mandb` databases and `cat` pages, `-E` encodings other than UTF-8/ASCII,
 `-C`, `-D` and the other man-db options (rejected as usage errors).
 `gtroff-zig` leaves `\(aq` unresolved in some pages (seen in uutils pages); that
 is a gtroff-zig issue.
+
+15. **Layout like groff's** (compared with man-db's output line by line):
+    justified text (`md-zig` 0.5.0 `TextOptions.justify`, the extra spaces
+    alternating between the two ends of a line), no blank line under a section
+    heading (`tight_headings`, md-zig 0.6.0), and groff's header and footer lines
+    made from the `.TH` (or `.Dt`/`.Os`/`.Dd`) line (`render.zig`). On 40 random
+    pages 57% of lines are identical to man-db's; most of the rest differ by a
+    hyphenated word or a page's own margins. Strings with escapes in them
+    (`.ds Aq \(aq`) are now read when used (gtroff-zig 0.5.0).
 
 ## Consequences
 

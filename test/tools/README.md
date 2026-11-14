@@ -13,3 +13,4 @@ top; `cli.sh`, `compare_man.sh`, `compress_roundtrip.sh` and `stress.sh` take th
 | `stress.sh` | renders every installed page; reports crashes and empty output |
 | `compare_man.sh [N [SEED]]` | which page `man -w NAME` and `dkman -w NAME` pick, and `manpath`, for N random names (needs man-db) |
 | `compress_roundtrip.sh [N [SEED]]` | N installed pages recompressed as xz/zstd/bzip2/lzma at several levels; output must equal the original's |
+| `layout_diff.sh [N [SEED]]` | share of output lines identical to man-db's (groff's) for N random pages |

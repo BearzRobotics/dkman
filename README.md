@@ -1,7 +1,7 @@
 # dkman
 
 A manual page tool in Zig, meant to replace man(1): finds pages in the traditional
-directories (gzip, xz, zstd, bzip2 and lzma compressed too), answers `-f` (whatis) and
+directories (gzip, xz, zstd, bzip2 and lzma compressed too, all decoded in process), answers `-f` (whatis) and
 `-k` (apropos) from a cached index of the NAME lines, searches pages in a built-in
 browser (`-b`: search box and preview), and shows them through a pager. Markdown documents
 (`name.1.md`) are first-class pages, read with
