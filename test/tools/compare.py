@@ -2,7 +2,7 @@
 """Compare dkman's word content with groff's for a sample of installed pages."""
 import gzip, os, random, re, subprocess, sys, collections, glob
 
-dk = "/home/dakota/de/dkman/zig-out/bin/dkman"
+dk = os.path.abspath(os.environ.get("DKMAN", "zig-out/bin/dkman"))
 ansi = re.compile(r"\x1b\[[0-9;]*m|\x1b\]8;[^\x1b]*\x1b\\")
 
 def text_of(path):
