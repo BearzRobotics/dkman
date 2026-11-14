@@ -1,14 +1,16 @@
 //! Reading a page file into memory, undoing gzip, xz, zstd, bzip2 and lzma.
+//! All of them are decoded in process: no external program is run.
 
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const flate = std.compress.flate;
+const bzip2 = @import("bzip2.zig");
 
 /// Longest page accepted, after decompression.
 pub const max_bytes: usize = 64 * 1024 * 1024;
 
-pub const Error = error{ PageTooLarge, BadCompression, DecompressorMissing, ReadFailed } || Allocator.Error || Io.File.OpenError;
+pub const Error = error{ PageTooLarge, BadCompression, ReadFailed } || Allocator.Error || Io.File.OpenError;
 
 /// Compression of a page file, recognised by its first bytes (so a mislabelled
 /// file still opens) and, for lzma, which has no magic number, by its name.
@@ -30,9 +32,8 @@ pub const Compression = enum {
     }
 };
 
-/// Reads `path` (relative to the current directory or absolute). gzip, xz and
-/// zstd are decompressed in process; bzip2 and lzma by the system's `bzip2` and
-/// `xz`. The caller owns the result.
+/// Reads `path` (relative to the current directory or absolute) and
+/// decompresses it. The caller owns the result.
 pub fn load(gpa: Allocator, io: Io, path: []const u8) Error![]u8 {
     var file = try Io.Dir.cwd().openFile(io, path, .{});
     defer file.close(io);
@@ -47,8 +48,8 @@ pub fn load(gpa: Allocator, io: Io, path: []const u8) Error![]u8 {
         .gzip => loadGzip(gpa, &reader.interface),
         .xz => loadXz(gpa, &reader.interface),
         .zstd => loadZstd(gpa, &reader.interface),
-        .bzip2 => loadExternal(gpa, io, &.{ "bzip2", "-dc", "--", path }),
-        .lzma => loadExternal(gpa, io, &.{ "xz", "-dc", "--format=lzma", "--", path }),
+        .bzip2 => loadBzip2(gpa, &reader.interface),
+        .lzma => loadLzma(gpa, &reader.interface),
     };
 }
 
@@ -145,22 +146,34 @@ pub fn loadZstd(gpa: Allocator, input: *Io.Reader) Error![]u8 {
     };
 }
 
-/// Runs a decompressor that writes the plain text to its standard output.
-fn loadExternal(gpa: Allocator, io: Io, argv: []const []const u8) Error![]u8 {
-    var child = std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .pipe, .stderr = .ignore }) catch return error.DecompressorMissing;
-    var buf: [4096]u8 = undefined;
-    var r = child.stdout.?.reader(io, &buf);
-    const out = readAll(gpa, &r.interface) catch |err| {
-        child.kill(io);
-        return err;
+/// Reads everything from `input` and decompresses it as bzip2.
+pub fn loadBzip2(gpa: Allocator, input: *Io.Reader) Error![]u8 {
+    return bzip2.decompress(gpa, input, max_bytes) catch |err| switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.ReadFailed => error.ReadFailed,
+        error.TooLarge => error.PageTooLarge,
+        error.Corrupt, error.BadCrc, error.Unsupported => error.BadCompression,
     };
-    errdefer gpa.free(out);
-    const term = child.wait(io) catch return error.BadCompression;
-    switch (term) {
-        .exited => |code| if (code != 0) return error.BadCompression,
+}
+
+/// Most memory the dictionary of an `.lzma` file may take.
+const lzma_memory_max: usize = 256 * 1024 * 1024;
+
+/// Reads everything from `input` and decompresses it as LZMA-alone (`.lzma`):
+/// a 13-byte header with the properties, dictionary size and length, then the
+/// range-coded data.
+pub fn loadLzma(gpa: Allocator, input: *Io.Reader) Error![]u8 {
+    var dec = std.compress.lzma.Decompress.initOptions(input, gpa, &.{}, .{}, lzma_memory_max) catch |err| switch (err) {
+        error.OutOfMemory => return error.OutOfMemory,
+        error.ReadFailed, error.EndOfStream => return error.ReadFailed,
         else => return error.BadCompression,
-    }
-    return out;
+    };
+    defer dec.deinit();
+    return dec.reader.allocRemaining(gpa, .limited(max_bytes)) catch |err| switch (err) {
+        error.StreamTooLong => error.PageTooLarge,
+        error.OutOfMemory => error.OutOfMemory,
+        error.ReadFailed => if (dec.err != null) error.BadCompression else error.ReadFailed,
+    };
 }
 
 test "loadGzip reads gzip data and rejects garbage" {
@@ -231,4 +244,24 @@ test "zstd frames with a large declared window and the window size reader" {
     huge[5] = 0xF8; // exponent 31: 2 GiB
     var r2: Io.Reader = .fixed(&huge);
     try t.expectError(error.BadCompression, loadZstd(t.allocator, &r2));
+}
+
+test "loadLzma reads LZMA-alone files and rejects garbage" {
+    const t = std.testing;
+    // `xz --format=lzma`
+    const small = [_]u8{ 0x5d, 0x00, 0x00, 0x80, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x34, 0x19, 0x49, 0xee, 0x8d, 0xdd, 0x3d, 0x3a, 0xdf, 0xff, 0xff, 0xdd, 0x12, 0x00, 0x00 };
+    var r: Io.Reader = .fixed(&small);
+    const out = try loadLzma(t.allocator, &r);
+    defer t.allocator.free(out);
+    try t.expectEqualStrings("hello\n", out);
+
+    const bigger = [_]u8{ 0x5d, 0x00, 0x00, 0x00, 0x04, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00, 0x36, 0x1e, 0x89, 0xdd, 0x7d, 0x49, 0x14, 0x93, 0xbc, 0x92, 0xb7, 0x48, 0x17, 0x9e, 0x06, 0x80, 0x4f, 0x21, 0xe0, 0xca, 0x76, 0x94, 0xb1, 0xb3, 0xfe, 0xbd, 0xc5, 0x46, 0x0e, 0x76, 0x9f, 0x59, 0x6e, 0xb2, 0xd0, 0x7b, 0x40, 0x9a, 0xda, 0x95, 0x0c, 0x94, 0x8e, 0xa9, 0x6e, 0x04, 0xe1, 0xff, 0xff, 0xcf, 0x1f, 0xf0, 0x00 };
+    var r2: Io.Reader = .fixed(&bigger);
+    const out2 = try loadLzma(t.allocator, &r2);
+    defer t.allocator.free(out2);
+    try t.expectEqual(@as(usize, 36 * 30), out2.len);
+    try t.expect(std.mem.startsWith(u8, out2, "lzma alone page text"));
+
+    var bad: Io.Reader = .fixed("this is not lzma at all, nothing like it");
+    try t.expectError(error.BadCompression, loadLzma(t.allocator, &bad));
 }
