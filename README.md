@@ -21,7 +21,7 @@ layout is still approximate (text is not justified, tables are drawn as grids).
 
 Install (the program, its manual page as man(7) generated from `docs/manpages/dkman.1.md`, and bash, zsh and fish completions):
 
-    zig build -Doptimize=ReleaseSafe --prefix /usr/local
+    zig build -Doptimize=ReleaseSafe --prefix /usr/local     # or ReleaseSmall: about 0.6 MB, static with -Dtarget=x86_64-linux-musl
     zig build -Doptimize=ReleaseSafe --prefix /usr/local -Dinstall-as-man   # also as man, whatis, apropos, manpath, mandb
 
 The page index for `-f` and `-k` is built on first use (about a second) and cached

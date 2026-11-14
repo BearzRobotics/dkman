@@ -173,13 +173,14 @@ fn appendClipped(gpa: Allocator, out: *std.ArrayList(u8), s: []const u8, max: us
 pub const Size = struct { rows: usize, cols: usize };
 
 pub fn terminalSize() Size {
-    if (builtin.os.tag == .linux) {
-        var ws: posix.winsize = undefined;
-        const rc = std.os.linux.ioctl(1, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws));
-        if (std.os.linux.errno(rc) == .SUCCESS and ws.col > 0 and ws.row > 0) {
-            return .{ .rows = ws.row, .cols = ws.col };
-        }
-    }
+    var ws: posix.winsize = undefined;
+    const ok = switch (builtin.os.tag) {
+        .linux => std.os.linux.errno(std.os.linux.ioctl(1, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws))) == .SUCCESS,
+        // The BSDs and macOS always have libc, whose ioctl takes the request.
+        .macos, .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(1, std.c.T.IOCGWINSZ, @intFromPtr(&ws)) == 0,
+        else => false,
+    };
+    if (ok and ws.col > 0 and ws.row > 0) return .{ .rows = ws.row, .cols = ws.col };
     return .{ .rows = 24, .cols = 80 };
 }
 

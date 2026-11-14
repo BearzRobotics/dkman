@@ -216,4 +216,6 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
   `whatis` on most pages (142 of 150 sampled names on one machine, the rest
   differing mostly where the two databases were built from different files).
 - `-b` needs a terminal 70 columns wide or more to show the preview.
+- Built and tested on Linux. It compiles for macOS and the BSDs (the terminal
+  size and raw mode use the same POSIX calls), but has not been run there.
 - Output encoding is UTF-8 or ASCII only (`-E` is ignored).
