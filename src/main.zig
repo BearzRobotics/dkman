@@ -312,7 +312,9 @@ const Ctx = struct {
     ignore_case: bool,
     use_pager: bool,
     pager_cmd: []const u8,
-    cache_file: ?[]const u8,
+    /// Where the page index is kept, system-wide first (read first, written first
+    /// when possible), then the user's.
+    cache_files: []const []const u8,
 };
 
 pub fn main(init: std.process.Init) !u8 {
@@ -384,7 +386,7 @@ fn run(init: std.process.Init) !u8 {
         .ignore_case = !cfg.match_case,
         .use_pager = cfg.pager and stdout_tty and !cfg.html,
         .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")) orelse "less",
-        .cache_file = try cacheFile(arena, env, dirs),
+        .cache_files = try cacheFiles(arena, env, dirs),
     };
 
     return switch (cfg.mode) {
@@ -525,7 +527,8 @@ fn suggestNames(ctx: Ctx, name: []const u8) !void {
 }
 
 fn loadIndex(ctx: Ctx, force: bool) ![]whatis.Entry {
-    return whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_file, force, "dkman: building the page index (first use, or the manual directories changed)...\n");
+    const loaded = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_files, force, "dkman: building the page index (first use, or the manual directories changed)...\n");
+    return loaded.entries;
 }
 
 fn runWhatis(ctx: Ctx, cfg: Config) !u8 {
@@ -595,12 +598,12 @@ fn runGlobal(ctx: Ctx, cfg: Config) !u8 {
 }
 
 fn runUpdate(ctx: Ctx, cfg: Config) !u8 {
-    if (ctx.cache_file == null) {
-        try diag(ctx.io, "dkman: no cache directory (set HOME or XDG_CACHE_HOME)\n", .{});
+    const loaded = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_files, true, null);
+    const to = loaded.written_to orelse {
+        try diag(ctx.io, "dkman: cannot write the page index to {s}\n", .{try std.mem.join(ctx.arena, " or ", ctx.cache_files)});
         return exit_failed;
-    }
-    const entries = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_file, true, null);
-    if (!cfg.quiet) try printLine(ctx.io, try std.fmt.allocPrint(ctx.arena, "{d} names indexed in {s}", .{ entries.len, ctx.cache_file.? }));
+    };
+    if (!cfg.quiet) try printLine(ctx.io, try std.fmt.allocPrint(ctx.arena, "{d} pages indexed in {s}", .{ loaded.entries.len, to }));
     return 0;
 }
 
@@ -703,22 +706,26 @@ fn readConf(gpa: Allocator, arena: Allocator, io: Io) !paths.Conf {
     return .{};
 }
 
-/// Where the page index lives: `$XDG_CACHE_HOME/dkman/` or `~/.cache/dkman/`,
-/// one file per set of manual directories.
-fn cacheFile(arena: Allocator, env: *const std.process.Environ.Map, dirs: []const []const u8) !?[]const u8 {
-    const base = if (nonEmpty(env.get("XDG_CACHE_HOME"))) |x|
-        try arena.dupe(u8, x)
-    else if (nonEmpty(env.get("HOME"))) |h|
-        try std.fs.path.join(arena, &.{ h, ".cache" })
-    else
-        return null;
+/// Where the page index lives, one file per set of manual directories:
+/// `/var/cache/dkman/` (made by `mandb` run as root, read by everyone), and
+/// `$XDG_CACHE_HOME/dkman/` or `~/.cache/dkman/` for one user.
+fn cacheFiles(arena: Allocator, env: *const std.process.Environ.Map, dirs: []const []const u8) ![]const []const u8 {
     var hash = std.hash.Wyhash.init(0);
     for (dirs) |d| {
         hash.update(d);
         hash.update(":");
     }
     const name = try std.fmt.allocPrint(arena, "whatis-{x}", .{hash.final()});
-    return try std.fs.path.join(arena, &.{ base, "dkman", name });
+    var out: std.ArrayList([]const u8) = .empty;
+    try out.append(arena, try std.fs.path.join(arena, &.{ "/var/cache/dkman", name }));
+    const base = if (nonEmpty(env.get("XDG_CACHE_HOME"))) |x|
+        try arena.dupe(u8, x)
+    else if (nonEmpty(env.get("HOME"))) |h|
+        try std.fs.path.join(arena, &.{ h, ".cache" })
+    else
+        return out.items;
+    try out.append(arena, try std.fs.path.join(arena, &.{ base, "dkman", name }));
+    return out.items;
 }
 
 fn printLine(io: Io, s: []const u8) !void {

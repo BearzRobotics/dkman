@@ -179,10 +179,17 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
 
 `XDG_CACHE_HOME`, `HOME`
 : The page descriptions are cached in `$XDG_CACHE_HOME/dkman/` or
-  `~/.cache/dkman/`. The cache is rebuilt when a manual directory is added to or
-  removed from (or `--update-index` is given).
+  `~/.cache/dkman/`, and in `/var/cache/dkman/` (see FILES). The cache is
+  rebuilt when a manual directory is added to or removed from (or
+  `--update-index` is given).
 
 # FILES
+
+`/var/cache/dkman/`
+: A system-wide index of page descriptions. `mandb` (or `dkman --update-index`)
+  run as a user who can write there makes it; everyone reads it when it is
+  current, and builds their own cache otherwise. A package should run `mandb`
+  after installing or removing pages.
 
 `/etc/manpath.config`, `/etc/man_db.conf`
 : Read for `MANDATORY_MANPATH`, `MANPATH_MAP` and `SECTION`.

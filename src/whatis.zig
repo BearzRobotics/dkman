@@ -299,27 +299,39 @@ pub fn parseIndex(arena: Allocator, text: []const u8, print: u64) Allocator.Erro
     return out.items;
 }
 
-/// The index for `dirs`: read from `cache_file` when it is current, otherwise
-/// built and (if `cache_file` is given) written there. `force` rebuilds. `notice`
-/// is written to standard error before a slow build starts.
-pub fn load(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, cache_file: ?[]const u8, force: bool, notice: ?[]const u8) Allocator.Error![]Entry {
+pub const Loaded = struct {
+    entries: []Entry,
+    /// The cache file the index was written to, when it had to be built.
+    written_to: ?[]const u8 = null,
+};
+
+/// The index for `dirs`: read from the first of `cache_files` that is current
+/// (a system-wide cache first, then the user's), otherwise built and written
+/// to the first of them that can be written. `force` rebuilds. `notice` is
+/// written to standard error before a slow build starts.
+pub fn load(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, cache_files: []const []const u8, force: bool, notice: ?[]const u8) Allocator.Error!Loaded {
     const print = fingerprint(io, dirs);
-    if (cache_file) |cf| if (!force) {
+    if (!force) for (cache_files) |cf| {
         if (Io.Dir.cwd().readFileAlloc(io, cf, arena, .limited(256 * 1024 * 1024))) |text| {
-            if (try parseIndex(arena, text, print)) |entries| return entries;
+            if (try parseIndex(arena, text, print)) |entries| return .{ .entries = entries };
         } else |_| {}
     };
     if (notice) |msg| Io.File.stderr().writeStreamingAll(io, msg) catch {};
     const entries = try build(gpa, arena, io, dirs);
-    if (cache_file) |cf| {
-        if (std.fs.path.dirname(cf)) |d| Io.Dir.cwd().createDirPath(io, d) catch return entries;
-        const data = try serialize(arena, entries, print);
+    if (cache_files.len == 0) return .{ .entries = entries };
+    const data = try serialize(arena, entries, print);
+    for (cache_files) |cf| {
+        if (std.fs.path.dirname(cf)) |d| Io.Dir.cwd().createDirPath(io, d) catch continue;
+        // Written under another name first, so a reader never sees half a file.
         const tmp = try std.fmt.allocPrint(arena, "{s}.tmp{x}", .{ cf, print });
-        if (Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data })) {
-            Io.Dir.rename(Io.Dir.cwd(), tmp, Io.Dir.cwd(), cf, io) catch Io.Dir.cwd().deleteFile(io, tmp) catch {};
-        } else |_| {}
+        Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data }) catch continue;
+        Io.Dir.rename(Io.Dir.cwd(), tmp, Io.Dir.cwd(), cf, io) catch {
+            Io.Dir.cwd().deleteFile(io, tmp) catch {};
+            continue;
+        };
+        return .{ .entries = entries, .written_to = cf };
     }
-    return entries;
+    return .{ .entries = entries };
 }
 
 /// Width of the `name (section)` column in a listing: man-db pads to 20.
