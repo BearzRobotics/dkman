@@ -418,7 +418,11 @@ pub const Matcher = struct {
             const re = try arena.create(regex.Regex);
             if (regex.Regex.compile(arena, word, .{ .dialect = .posix_ere, .ignore_case = true }, null)) |compiled| {
                 re.* = compiled;
-                m.searcher = try re.searcher(arena);
+                // regex-zig 0.3 may give up building its matcher; search literally then.
+                m.searcher = re.searcher(arena) catch |err| switch (err) {
+                    error.OutOfMemory => return error.OutOfMemory,
+                    else => null,
+                };
             } else |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,
                 else => {},
