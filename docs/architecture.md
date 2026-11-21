@@ -18,7 +18,7 @@
 | `format.zig` | Decides the format from file name and first macro line |
 | `render.zig` | One entry point from format and bytes to terminal text |
 | `search.zig` | Sorting and listing pages (`-b`, `-K`), similar-name suggestions |
-| `whatis.zig` | NAME-section descriptions, the cached index, `-f` and `-k` matching (regex-zig for expressions) |
+| `whatis.zig` | NAME-section descriptions, the cached index (built from each downloaded set's own `dkman-index`), `-f` and `-k` matching (regex-zig for expressions) |
 | `glob.zig` | Shell wildcards for `--wildcard` |
 | `tui.zig` | The `-f` browser: search box, page list and preview, fuzzy matching, raw terminal |
 | `theme.zig` | Restyles md-zig's colored output: headings, options, arguments, code, page references |

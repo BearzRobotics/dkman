@@ -126,6 +126,81 @@ pub fn scan(
     return pages.items;
 }
 
+/// Section given to a loose Markdown document that names none (`GUIDE.md`).
+pub const loose_section = "doc";
+
+/// The user's own pages anywhere below `root` (their documentation folder):
+/// every Markdown file, and every man page whose file name ends in a section
+/// that starts with a digit (`rg.1`, `foo.8.gz`). `GUIDE.md` is listed as
+/// `GUIDE` in section `doc`; `tool.1.md` as `tool` in section 1. Directories
+/// starting with a dot (`.git`), installed documentation sets (they have a
+/// manifest) and those in `skip` (paths below `root`, `/` or `\`, any case)
+/// are not entered. Unreadable directories are passed over.
+pub fn scanLoose(arena: Allocator, io: Io, root: []const u8, skip: []const []const u8) Allocator.Error![]Page {
+    var pages: std.ArrayList(Page) = .empty;
+    var dir = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return pages.items;
+    defer dir.close(io);
+    var walker = try dir.walkSelectively(arena);
+    defer walker.deinit();
+    while (true) {
+        const entry = (walker.next(io) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => continue,
+        }) orelse break;
+        if (entry.basename.len == 0 or entry.basename[0] == '.') continue;
+        if (entry.kind == .directory) {
+            if (inSkipList(skip, entry.path)) continue;
+            if (entry.dir.openDir(io, entry.basename, .{})) |sub_dir| {
+                var sub = sub_dir;
+                defer sub.close(io);
+                if (sub.statFile(io, @import("fetch.zig").manifest_name, .{})) |_| continue else |_| {}
+            } else |_| continue;
+            walker.enter(io, entry) catch {};
+            continue;
+        }
+        if (entry.kind != .file and entry.kind != .sym_link) continue;
+        const page = loosePage(entry.basename) orelse continue;
+        try pages.append(arena, .{
+            .name = try arena.dupe(u8, page.name),
+            // Both name and section point into the walker's buffer, which is reused.
+            .section = try arena.dupe(u8, page.section),
+            .path = try std.fs.path.join(arena, &.{ root, entry.path }),
+            .dir_index = 0,
+        });
+    }
+    return pages.items;
+}
+
+/// Name and section of a loose page's file name, or null when it is not one.
+fn loosePage(file_name: []const u8) ?struct { name: []const u8, section: []const u8 } {
+    if (splitFileName(file_name)) |p| {
+        // A man page section: a digit, then at most a few letters (`1`, `3p`, `8ssl`).
+        var is_section = std.ascii.isDigit(p.section[0]) and p.section.len <= 6;
+        for (p.section) |c| {
+            if (!std.ascii.isAlphanumeric(c)) is_section = false;
+        }
+        if (is_section) return .{ .name = p.name, .section = p.section };
+    }
+    if (std.mem.endsWith(u8, file_name, ".md") and file_name.len > 3) return .{ .name = file_name[0 .. file_name.len - 3], .section = loose_section };
+    return null;
+}
+
+/// Is the directory `rel` (below the documentation folder) listed in `skip`?
+fn inSkipList(skip: []const []const u8, rel: []const u8) bool {
+    for (skip) |s| {
+        const t = std.mem.trim(u8, s, "/\\ \t\r");
+        if (t.len != rel.len) continue;
+        var same = true;
+        for (t, rel) |a, b| {
+            const sa = a == '/' or a == '\\';
+            const sb = b == '/' or b == '\\';
+            if (sa != sb or (!sa and std.ascii.toLower(a) != std.ascii.toLower(b))) same = false;
+        }
+        if (same) return true;
+    }
+    return false;
+}
+
 const Ordering = struct {
     order: []const []const u8,
 
@@ -398,9 +473,10 @@ test "searchDirs uses MANPATH and expands empty entries to the usual ones" {
     var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
-    const d1 = try searchDirs(a, "/x:/y", &default_dirs);
+    const sep = [_]u8{platform.list_separator};
+    const d1 = try searchDirs(a, "/x" ++ sep ++ "/y", &default_dirs);
     try std.testing.expectEqual(@as(usize, 2), d1.len);
-    const d2 = try searchDirs(a, "/x::/y", &default_dirs);
+    const d2 = try searchDirs(a, "/x" ++ sep ++ sep ++ "/y", &default_dirs);
     try std.testing.expectEqual(2 + default_dirs.len, d2.len);
     const d3 = try searchDirs(a, null, &default_dirs);
     try std.testing.expectEqual(default_dirs.len, d3.len);
@@ -491,8 +567,8 @@ test "withLocale puts the locale before each directory" {
     const a = arena_state.allocator();
     const out = try withLocale(a, &.{"/m"}, "de_DE.UTF-8");
     try std.testing.expectEqual(@as(usize, 3), out.len);
-    try std.testing.expectEqualStrings("/m/de_DE", out[0]);
-    try std.testing.expectEqualStrings("/m/de", out[1]);
+    try std.testing.expectEqualStrings("/m" ++ std.fs.path.sep_str ++ "de_DE", out[0]);
+    try std.testing.expectEqualStrings("/m" ++ std.fs.path.sep_str ++ "de", out[1]);
     try std.testing.expectEqualStrings("/m", out[2]);
     try std.testing.expectEqual(@as(usize, 1), (try withLocale(a, &.{"/m"}, "C")).len);
     try std.testing.expectEqual(@as(usize, 1), (try withLocale(a, &.{"/m"}, null)).len);
@@ -515,10 +591,10 @@ test "deriveManpath follows PATH, the map and the mandatory list" {
     const conf = try parseConf(a, conf_text);
     try t.expectEqual(@as(usize, 1), conf.maps.len);
     try t.expectEqual(@as(usize, 2), conf.sections.len);
-    const path_env = try std.fmt.allocPrint(a, "{s}/opt/tool/bin:/nowhere/bin:relative:/x/y", .{root});
+    const path_env = try std.fmt.allocPrint(a, "{s}/opt/tool/bin{c}/nowhere/bin{c}relative{c}/x/y", .{ root, platform.list_separator, platform.list_separator, platform.list_separator });
     const dirs = try deriveManpath(a, io, path_env, conf);
     try t.expectEqual(@as(usize, 2), dirs.len);
-    try t.expect(std.mem.endsWith(u8, dirs[0], "opt/tool/share/man"));
+    try t.expect(std.mem.endsWith(u8, dirs[0], "man") and std.mem.find(u8, dirs[0], "tool") != null);
     try t.expect(std.mem.endsWith(u8, dirs[1], "mand"));
     // Nothing found: the built-in defaults.
     const none = try deriveManpath(a, io, null, .{});
@@ -542,4 +618,39 @@ test "followLinks follows a chain of links and leaves plain files alone" {
     const real = try std.fs.path.join(a, &.{ root, "man1", "real.1" });
     try t.expectEqualStrings(real, try followLinks(a, io, top));
     try t.expectEqualStrings(real, try followLinks(a, io, real));
+}
+
+test "scanLoose finds the user's Markdown and man pages and skips the rest" {
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "docs/ripgrep");
+    try tmp.dir.createDirPath(io, "docs/WindowsServerDocs/manage");
+    try tmp.dir.createDirPath(io, "docs/.git");
+    try tmp.dir.createDirPath(io, "docs/dkman/cmd/mancmd");
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/ripgrep/GUIDE.md", .data = "# Guide\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/ripgrep/rg.1", .data = ".TH RG 1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/ripgrep/notes.txt", .data = "x" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/ripgrep/v1.2-notes.pdf", .data = "x" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/tool.8.md", .data = "# tool\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/WindowsServerDocs/manage/a.md", .data = "# a\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/.git/b.md", .data = "# b\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/dkman/cmd/dkman-set", .data = "id=cmd\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/dkman/cmd/mancmd/dir.cmd.md", .data = "# dir\n" });
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const root = try tmp.dir.realPathFileAlloc(io, "docs", a);
+    const pages = try scanLoose(a, io, root, &.{"windowsserverdocs"});
+    try t.expectEqual(@as(usize, 3), pages.len);
+    var guide = false;
+    var rg = false;
+    var tool = false;
+    for (pages) |p| {
+        if (std.mem.eql(u8, p.name, "GUIDE") and std.mem.eql(u8, p.section, loose_section)) guide = true;
+        if (std.mem.eql(u8, p.name, "rg") and std.mem.eql(u8, p.section, "1")) rg = true;
+        if (std.mem.eql(u8, p.name, "tool") and std.mem.eql(u8, p.section, "8")) tool = true;
+    }
+    try t.expect(guide and rg and tool);
 }

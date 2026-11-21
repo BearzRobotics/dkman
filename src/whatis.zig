@@ -262,7 +262,7 @@ pub fn splitNameLine(arena: Allocator, line: []const u8) Allocator.Error!Parsed 
     return .{ .names = names.items, .description = desc };
 }
 
-fn fingerprint(io: Io, dirs: []const []const u8) u64 {
+fn fingerprint(io: Io, dirs: []const []const u8, loose: ?Loose) u64 {
     var h = std.hash.Wyhash.init(0x646b6d616e);
     for (dirs) |d| {
         h.update(d);
@@ -276,7 +276,44 @@ fn fingerprint(io: Io, dirs: []const []const u8) u64 {
             if (base.statFile(io, e.name, .{})) |st| h.update(std.mem.asBytes(&st.mtime.nanoseconds)) else |_| {}
         }
     }
+    // The user's folder: a file added in it or in one of its folders changes
+    // the times seen here. Deeper changes need `--update-index` (walking the
+    // whole tree at every search would be slow on a USB drive).
+    if (loose) |l| {
+        h.update(l.root);
+        for (l.skip) |s| h.update(s);
+        var base = Io.Dir.cwd().openDir(io, l.root, .{ .iterate = true }) catch return h.final();
+        defer base.close(io);
+        if (base.stat(io)) |st| h.update(std.mem.asBytes(&st.mtime.nanoseconds)) else |_| {}
+        var it = base.iterate();
+        while (it.next(io) catch null) |e| {
+            if (e.kind != .directory or e.name[0] == '.') continue;
+            h.update(e.name);
+            if (base.statFile(io, e.name, .{})) |st| h.update(std.mem.asBytes(&st.mtime.nanoseconds)) else |_| {}
+        }
+    }
     return h.final();
+}
+
+/// The user's own documentation folder, read for loose pages
+/// (`paths.scanLoose`): its root and the folders below it to leave out.
+pub const Loose = struct {
+    root: []const u8,
+    skip: []const []const u8 = &.{},
+};
+
+/// `keys` with the folders of `rel` (a loose page's path below the user's
+/// folder) added, so that `-k ripgrep` finds `ripgrep/GUIDE.md`.
+fn withFolderKeys(arena: Allocator, keys: []const u8, rel: []const u8) Allocator.Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.appendSlice(arena, keys);
+    const parent = std.fs.path.dirname(rel) orelse return out.items;
+    var parts = std.mem.tokenizeAny(u8, parent, "/\\");
+    while (parts.next()) |part| {
+        try out.append(arena, ',');
+        for (part) |c| try out.append(arena, if (c == ',' or c == '\t' or c == '\n' or c == '\r') ' ' else c);
+    }
+    return out.items;
 }
 
 /// A NAME section can hold several `names - description` entries, one per
@@ -298,55 +335,223 @@ fn pickEntry(arena: Allocator, lines: []const u8, file_name: []const u8, all_nam
 }
 
 /// Reads every page and gathers the names and descriptions. Slow (it renders
-/// every page): prefer `load`, which caches. `gpa` owns the result's text.
-pub fn build(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8) Allocator.Error![]Entry {
-    const pages = try paths.scan(arena, io, dirs, null, null, false);
+/// every page): prefer `load`, which caches. A downloaded documentation set
+/// keeps its own entries (`set_index_name`), so it is read once, not at every
+/// rebuild. `gpa` owns the result's text.
+pub fn build(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, loose: ?Loose) Allocator.Error![]Entry {
+    var progress: Progress = .{ .io = io, .tty = Io.File.stderr().isTty(io) catch false };
     var out: std.ArrayList(Entry) = .empty;
-    for (pages) |pg| {
-        var scratch_state = std.heap.ArenaAllocator.init(gpa);
-        defer scratch_state.deinit();
-        const scratch = scratch_state.allocator();
-        var parsed: Parsed = .{ .names = &.{}, .description = "" };
-        var all_names: std.ArrayList([]const u8) = .empty;
-        // A page that is a link or a `.so` stub to another file is listed under
-        // its own name only; its text is the target's.
-        var is_alias = !std.mem.eql(u8, try paths.followLinks(scratch, io, pg.path), pg.path);
-        if (page_mod.load(gpa, scratch, io, dirs, pg.path)) |loaded| {
-            defer loaded.deinit(gpa);
-            if (!std.mem.eql(u8, loaded.path, pg.path)) is_alias = true;
-            // Only roff and Markdown have a NAME section to read.
-            if (loaded.format != .plain) {
-                if (render.render(gpa, loaded.format, head(loaded.bytes, loaded.format), .{ .width = 0 })) |text| {
-                    defer gpa.free(text);
-                    if (try nameSection(scratch, text)) |lines| {
-                        parsed = try pickEntry(scratch, lines, pg.name, &all_names);
-                    }
-                } else |_| {}
-            }
-            // Documentation sets have no NAME section: summarize the text.
-            if (parsed.description.len == 0 and loaded.format == .markdown) {
-                if (try docSummary(scratch, loaded.bytes)) |d| parsed.description = d;
-            }
-        } else |_| {}
-        // Listed under the file's name, as in man-db; the names the NAME line
-        // declares are further keys to find it by.
-        const display = pg.name;
-        var keys: std.ArrayList(u8) = .empty;
-        try keys.appendSlice(arena, pg.name);
-        if (!is_alias) for (all_names.items) |n| {
-            if (std.mem.eql(u8, n, pg.name)) continue;
-            try keys.append(arena, ',');
-            try keys.appendSlice(arena, n);
-        };
-        try out.append(arena, .{
-            .name = try arena.dupe(u8, display),
-            .section = pg.section,
-            .path = pg.path,
-            .keys = keys.items,
-            .description = try arena.dupe(u8, parsed.description),
-        });
+    for (dirs) |dir| {
+        if (isDocSet(io, dir)) {
+            try out.appendSlice(arena, try setEntries(gpa, arena, io, dirs, dir, &progress));
+            continue;
+        }
+        const pages = try paths.scan(arena, io, &.{dir}, null, null, false);
+        progress.start(std.fs.path.basename(dir), pages.len);
+        for (pages) |pg| {
+            try out.append(arena, try describe(gpa, arena, io, dirs, pg));
+            progress.step();
+        }
+        progress.finish();
+    }
+    if (loose) |l| {
+        const pages = try paths.scanLoose(arena, io, l.root, l.skip);
+        progress.start(std.fs.path.basename(l.root), pages.len);
+        for (pages) |pg| {
+            var e = try describe(gpa, arena, io, dirs, pg);
+            e.keys = try withFolderKeys(arena, e.keys, relativeTo(l.root, pg.path));
+            try out.append(arena, e);
+            progress.step();
+        }
+        progress.finish();
     }
     std.mem.sort(Entry, out.items, {}, entryLess);
+    return out.items;
+}
+
+/// The index entry of one page. `dirs` resolve `.so` redirects.
+fn describe(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, pg: paths.Page) Allocator.Error!Entry {
+    var scratch_state = std.heap.ArenaAllocator.init(gpa);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+    var parsed: Parsed = .{ .names = &.{}, .description = "" };
+    var all_names: std.ArrayList([]const u8) = .empty;
+    // A page that is a link or a `.so` stub to another file is listed under
+    // its own name only; its text is the target's.
+    var is_alias = !std.mem.eql(u8, try paths.followLinks(scratch, io, pg.path), pg.path);
+    if (page_mod.load(gpa, scratch, io, dirs, pg.path)) |loaded| {
+        defer loaded.deinit(gpa);
+        if (!std.mem.eql(u8, loaded.path, pg.path)) is_alias = true;
+        // Only roff and Markdown have a NAME section to read.
+        if (loaded.format != .plain) {
+            if (render.render(gpa, loaded.format, head(loaded.bytes, loaded.format), .{ .width = 0 })) |text| {
+                defer gpa.free(text);
+                if (try nameSection(scratch, text)) |lines| {
+                    parsed = try pickEntry(scratch, lines, pg.name, &all_names);
+                }
+            } else |_| {}
+        }
+        // Documentation sets have no NAME section: summarize the text.
+        if (parsed.description.len == 0 and loaded.format == .markdown) {
+            if (try docSummary(scratch, loaded.bytes)) |d| parsed.description = d;
+        }
+    } else |_| {}
+    // Listed under the file's name, as in man-db; the names the NAME line
+    // declares are further keys to find it by.
+    var keys: std.ArrayList(u8) = .empty;
+    try keys.appendSlice(arena, pg.name);
+    if (!is_alias) for (all_names.items) |n| {
+        if (std.mem.eql(u8, n, pg.name)) continue;
+        try keys.append(arena, ',');
+        try keys.appendSlice(arena, n);
+    };
+    return .{
+        .name = try arena.dupe(u8, pg.name),
+        .section = pg.section,
+        .path = pg.path,
+        .keys = keys.items,
+        // A tab or newline would break the index's lines.
+        .description = try oneLine(arena, parsed.description),
+    };
+}
+
+/// `s` with tabs and line breaks turned into spaces, in `arena`.
+fn oneLine(arena: Allocator, s: []const u8) Allocator.Error![]const u8 {
+    const out = try arena.dupe(u8, s);
+    for (out) |*c| {
+        if (c.* == '\t' or c.* == '\n' or c.* == '\r') c.* = ' ';
+    }
+    return out;
+}
+
+/// Reports a long index build on standard error, so that reading a hundred
+/// thousand pages from a slow USB drive does not look like a hang: a line
+/// naming the directory, and on a terminal a running count.
+const Progress = struct {
+    io: Io,
+    tty: bool,
+    label: []const u8 = "",
+    total: usize = 0,
+    done: usize = 0,
+    shown: bool = false,
+
+    /// Directories smaller than this are quick; they are not reported.
+    const threshold = 1000;
+
+    fn start(p: *Progress, label: []const u8, total: usize) void {
+        p.* = .{ .io = p.io, .tty = p.tty, .label = label, .total = total, .shown = total >= threshold };
+        if (p.shown and !p.tty) p.say("dkman: indexing {s} ({d} pages)...\n", .{ label, total });
+    }
+
+    fn step(p: *Progress) void {
+        p.done += 1;
+        if (p.shown and p.tty and (p.done % 100 == 0 or p.done == p.total))
+            p.say("\rdkman: indexing {s}: {d}/{d} pages", .{ p.label, p.done, p.total });
+    }
+
+    fn finish(p: *Progress) void {
+        if (p.shown and p.tty) p.say("\n", .{});
+        p.shown = false;
+    }
+
+    fn say(p: *Progress, comptime fmt: []const u8, args: anytype) void {
+        var buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
+        Io.File.stderr().writeStreamingAll(p.io, msg) catch {};
+    }
+};
+
+/// A documentation set's own index, kept in the set's directory (see `build`).
+pub const set_index_name = "dkman-index";
+/// Changes when what is recorded for a page changes, so old files are rebuilt.
+const set_index_version = "1";
+
+/// A directory installed by `--fetch-docs` (it has a manifest).
+fn isDocSet(io: Io, dir: []const u8) bool {
+    var d = Io.Dir.cwd().openDir(io, dir, .{}) catch return false;
+    defer d.close(io);
+    _ = d.statFile(io, @import("fetch.zig").manifest_name, .{}) catch return false;
+    return true;
+}
+
+/// The entries of the documentation set in `dir`: from its own index when
+/// that is current, otherwise read from the pages and saved there (best
+/// effort: the directory may be read-only). A set never changes once
+/// installed (a new download replaces the whole directory, index included),
+/// so the file is current when its format version is.
+fn setEntries(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, dir: []const u8, progress: *Progress) Allocator.Error![]const Entry {
+    const file = try std.fs.path.join(arena, &.{ dir, set_index_name });
+    if (Io.Dir.cwd().readFileAlloc(io, file, arena, .limited(256 * 1024 * 1024))) |text| {
+        if (try parseSetIndex(arena, text, dir)) |entries| return entries;
+    } else |_| {}
+
+    const pages = try paths.scan(arena, io, &.{dir}, null, null, false);
+    var out: std.ArrayList(Entry) = try .initCapacity(arena, pages.len);
+    progress.start(std.fs.path.basename(dir), pages.len);
+    for (pages) |pg| {
+        out.appendAssumeCapacity(try describe(gpa, arena, io, dirs, pg));
+        progress.step();
+    }
+    progress.finish();
+
+    const data = try serializeSet(arena, out.items, dir);
+    const tmp = try std.fmt.allocPrint(arena, "{s}.tmp", .{file});
+    if (Io.Dir.cwd().writeFile(io, .{ .sub_path = tmp, .data = data })) {
+        Io.Dir.rename(Io.Dir.cwd(), tmp, Io.Dir.cwd(), file, io) catch {
+            Io.Dir.cwd().deleteFile(io, tmp) catch {};
+        };
+    } else |_| {}
+    return out.items;
+}
+
+/// A set's index: `dkman-setindex VERSION`, then one line per page as in the
+/// main index, the path relative to the set's directory and written with `/`
+/// (the set may be on a drive moved between systems or drive letters).
+fn serializeSet(arena: Allocator, entries: []const Entry, dir: []const u8) Allocator.Error![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(arena, "dkman-setindex {s}\n", .{set_index_version});
+    for (entries) |e| {
+        const rel = try arena.dupe(u8, relativeTo(dir, e.path));
+        for (rel) |*c| {
+            if (c.* == '\\') c.* = '/';
+        }
+        try out.print(arena, "{s}\t{s}\t{s}\t{s}\t{s}\n", .{ e.name, e.section, rel, e.keys, e.description });
+    }
+    return out.items;
+}
+
+/// `path` below `dir` (as `paths.scan` joins them), else `path` itself.
+fn relativeTo(dir: []const u8, path: []const u8) []const u8 {
+    if (path.len > dir.len and std.mem.startsWith(u8, path, dir) and std.fs.path.isSep(path[dir.len])) return path[dir.len + 1 ..];
+    return path;
+}
+
+/// Parses a set's index (slices borrowed from `text`, paths made full below
+/// `dir`). Null when the header is not the current one.
+fn parseSetIndex(arena: Allocator, text: []const u8, dir: []const u8) Allocator.Error!?[]const Entry {
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    const first = std.mem.trimEnd(u8, lines.next() orelse return null, "\r");
+    if (!std.mem.eql(u8, first, "dkman-setindex " ++ set_index_version)) return null;
+    var out: std.ArrayList(Entry) = .empty;
+    while (lines.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (line.len == 0) continue;
+        var f = std.mem.splitScalar(u8, line, '\t');
+        const name = f.next() orelse continue;
+        const section = f.next() orelse continue;
+        const rel = try arena.dupe(u8, f.next() orelse continue);
+        const keys = f.next() orelse continue;
+        for (rel) |*c| {
+            if (c.* == '/') c.* = std.fs.path.sep;
+        }
+        try out.append(arena, .{
+            .name = name,
+            .section = section,
+            .path = try std.fs.path.join(arena, &.{ dir, rel }),
+            .keys = keys,
+            .description = f.rest(),
+        });
+    }
     return out.items;
 }
 
@@ -415,17 +620,18 @@ pub const Loaded = struct {
 /// (a system-wide cache first, then the user's), otherwise built and written
 /// to the first of them that can be written. `force` rebuilds. `notice` is
 /// written to standard error before a slow build starts.
-pub fn load(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, cache_files: []const []const u8, force: bool, notice: ?[]const u8) Allocator.Error!Loaded {
-    const print = fingerprint(io, dirs);
+pub fn load(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, loose: ?Loose, cache_files: []const []const u8, force: bool, notice: ?[]const u8) Allocator.Error!Loaded {
+    const print = fingerprint(io, dirs, loose);
     if (!force) for (cache_files) |cf| {
         if (Io.Dir.cwd().readFileAlloc(io, cf, arena, .limited(256 * 1024 * 1024))) |text| {
             if (try parseIndex(arena, text, print)) |entries| return .{ .entries = entries };
         } else |_| {}
     };
     if (notice) |msg| Io.File.stderr().writeStreamingAll(io, msg) catch {};
-    const entries = try build(gpa, arena, io, dirs);
+    const entries = try build(gpa, arena, io, dirs, loose);
     if (cache_files.len == 0) return .{ .entries = entries };
-    const data = try serialize(arena, entries, print);
+    // Taken again: writing a set's own index changed its directory's time.
+    const data = try serialize(arena, entries, fingerprint(io, dirs, loose));
     for (cache_files) |cf| {
         if (std.fs.path.dirname(cf)) |d| Io.Dir.cwd().createDirPath(io, d) catch continue;
         // Written under another name first, so a reader never sees half a file.
@@ -801,4 +1007,70 @@ test "docSummary prefers SYNOPSIS, then the front matter, then the first paragra
     const plain = "# dir\n\nDisplays a list of a directory's files, e.g. text. It also shows sizes.\n\n## Syntax\n";
     try t.expectEqualStrings("Displays a list of a directory's files, e.g. text.", (try docSummary(a, plain)).?);
     try t.expect((try docSummary(a, "# only a title\n")) == null);
+}
+
+test "a documentation set keeps its own index and is not read again" {
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "docs/cmd/mancmd");
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/cmd/dkman-set", .data = "id=cmd\npages=1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/cmd/mancmd/robocopy.cmd.md", .data = "---\ndescription: Copies files\tquickly.\n---\n# robocopy\n\nCopies file data.\n" });
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const set = try std.fs.path.join(a, &.{ try tmp.dir.realPathFileAlloc(io, ".", a), "docs", "cmd" });
+
+    const first = try build(t.allocator, a, io, &.{set}, null);
+    try t.expectEqual(@as(usize, 1), first.len);
+    try t.expectEqualStrings("robocopy", first[0].name);
+    try t.expect(std.mem.findScalar(u8, first[0].description, '\t') == null);
+    // The set's index was written; the page itself is no longer needed.
+    _ = try tmp.dir.statFile(io, "docs/cmd/" ++ set_index_name, .{});
+    try tmp.dir.deleteFile(io, "docs/cmd/mancmd/robocopy.cmd.md");
+    const again = try build(t.allocator, a, io, &.{set}, null);
+    try t.expectEqual(@as(usize, 1), again.len);
+    try t.expectEqualStrings(first[0].path, again[0].path);
+    try t.expectEqualStrings(first[0].description, again[0].description);
+    try t.expectEqualStrings("cmd", again[0].section);
+}
+
+test "the index written after indexing a set is current on the next load" {
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "docs/wsl/manwsl");
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/wsl/dkman-set", .data = "id=wsl\npages=1\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/wsl/manwsl/install.wsl.md", .data = "# Install\n\nInstall WSL.\n" });
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    const set = try std.fs.path.join(a, &.{ root, "docs", "wsl" });
+    const cache = try std.fs.path.join(a, &.{ root, "cache", "whatis" });
+    const first = try load(t.allocator, a, io, &.{set}, null, &.{cache}, false, null);
+    try t.expect(first.written_to != null);
+    const second = try load(t.allocator, a, io, &.{set}, null, &.{cache}, false, null);
+    try t.expect(second.written_to == null);
+    try t.expectEqual(@as(usize, 1), second.entries.len);
+}
+
+test "loose pages are indexed with their folders as keys" {
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "docs/ripgrep");
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/ripgrep/GUIDE.md", .data = "# Guide\n\nHow to search with rg.\n" });
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const root = try tmp.dir.realPathFileAlloc(io, "docs", a);
+    const entries = try build(t.allocator, a, io, &.{}, .{ .root = root });
+    try t.expectEqual(@as(usize, 1), entries.len);
+    const hits = try keywords(a, entries, &.{"ripgrep"}, false, .regex, &.{});
+    try t.expectEqual(@as(usize, 1), hits.len);
+    try t.expectEqual(@as(usize, 1), (try lookup(a, entries, "GUIDE", .exact, true, &.{})).len);
 }

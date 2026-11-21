@@ -49,7 +49,46 @@ it as Markdown in github.com/MicrosoftDocs, which dkman already reads.
 7. **`--docs-dir` / `DKMAN_DOCS`** keep the documentation anywhere (a toolkit
    USB drive). The page index is then written to `DIR/.cache` first, not to
    the host's cache, so it travels with the docs. The index stores absolute
-   paths, so a different drive letter rebuilds it (about 30 s for everything).
+   paths, so a different drive letter rebuilds it.
+   **Per-set index (0.6.1).** Building the index means reading every page,
+   and on a USB flash drive a cold read costs about 10 ms a file (measured
+   with a SanDisk 3.2 Gen1 stick: `winps-2025`, 3825 pages, took 43 s cold and
+   2 s warm). `all` is about 135 000 pages, so the first index after a fetch
+   took 20 minutes with no output and was taken for a hang; interrupting it
+   lost everything, so the next search started again from nothing. Each set
+   now keeps its entries in its own `dkman-index` file (paths relative to the
+   set, written with `/`), made the first time the set is indexed. A set never
+   changes once installed (a download replaces the whole directory), so the
+   file needs no fingerprint, only a format version. The main index is then
+   built from these files in seconds, also after a drive-letter change or
+   with `--set`; an interrupted build keeps the sets already done. A build
+   reports each directory of 1000 pages or more on standard error (with a
+   running count on a terminal). Alternatives: reading pages in parallel
+   threads (helps a flash drive somewhat, but every rebuild still reads
+   everything), or computing descriptions while downloading (no extra read,
+   but pages already installed would still need this path, and a page
+   written twice under one name would need its own bookkeeping).
+   **Downloads (0.6.1).** A repository whose download fails (a connection
+   dropped mid-archive, a file another program holds) is tried three times
+   and then skipped; the other repositories are still installed and indexed,
+   and the command exits 1 naming the sets to fetch again. Moving a finished
+   set into place is retried for up to 10 s, since on Windows a virus scanner
+   or the search indexer often still holds files just written. A single page
+   that cannot be written is reported and left out.
+   **A documentation folder of one's own (0.6.1).** `--docs-dir` was the sets'
+   directory, and every directory in it was searched as a set, so pointing it
+   at a folder that also holds one's own documents mixed them in, and a
+   fetch deleted any directory with a set's name. Now the folder is the
+   user's: sets go in its `dkman` subdirectory (a folder that already holds
+   sets keeps them, for 0.6.0 installs), only directories with a manifest are
+   sets or are ever replaced, and the rest of the folder is read for loose
+   pages (`paths.scanLoose`): Markdown files (section `doc` unless the name
+   carries one) and man pages, their folder names being further search keys.
+   `.dkmanignore` lists folders to leave out (a cloned documentation
+   repository already downloaded as a set, say). The fingerprint covers the
+   folder and its top-level folders only, since walking a large tree at
+   every search would be slow on a USB drive; deeper additions need
+   `--update-index`.
 8. **Not done:** `Update-Help` MAML (`*-help.xml`) and `about_*.help.txt`
    already installed by Windows PowerShell; real-console testing of the
    Windows console functions; Azure and Microsoft Graph PowerShell,

@@ -69,11 +69,28 @@ const Staging = struct {
 
 pub const Error = error{ HttpStatus, BadArchive } || Allocator.Error;
 
+pub const Result = struct {
+    /// Pages written, over all the sets installed.
+    pages: usize = 0,
+    /// Sets that could not be installed (each reported on standard error).
+    failed: usize = 0,
+};
+
+/// How often a repository's download is tried before its sets are given up:
+/// a connection dropped halfway through a large archive is the usual failure.
+const attempts = 3;
+
 /// Installs `sets` (all of them from repositories downloaded once each) below
-/// `root`, reporting on standard error. Returns the number of pages written.
-pub fn install(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process.Environ.Map, root: []const u8, sets: []const *const docsets.Set) !usize {
-    try Io.Dir.cwd().createDirPath(io, root);
-    var total: usize = 0;
+/// `root`, reporting on standard error. A repository that cannot be
+/// downloaded does not stop the others; its sets are counted as failed and an
+/// installed copy of them is kept.
+pub fn install(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process.Environ.Map, root: []const u8, sets: []const *const docsets.Set) Allocator.Error!Result {
+    var result: Result = .{};
+    Io.Dir.cwd().createDirPath(io, root) catch |err| {
+        say(io, "dkman: cannot create {s}: {s}\n", .{ root, describe(err) });
+        result.failed = sets.len;
+        return result;
+    };
     var done: std.StringHashMapUnmanaged(void) = .empty;
     for (sets) |first| {
         if (done.contains(first.repo)) continue;
@@ -83,39 +100,109 @@ pub fn install(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process
         for (sets) |s| {
             if (!std.mem.eql(u8, s.repo, first.repo) or !std.mem.eql(u8, s.ref, first.ref)) continue;
             const dir = try std.fs.path.join(arena, &.{ root, try std.fmt.allocPrint(arena, ".{s}.new", .{s.id}) });
-            Io.Dir.cwd().deleteTree(io, dir) catch {};
-            try Io.Dir.cwd().createDirPath(io, dir);
             try group.append(arena, .{ .set = s, .dir = dir });
         }
-        try say(io, "{s}: downloading (about {d} MB; only Markdown pages are kept)...\n", .{ first.repo, docsets.repoSize(first.repo) });
-        download(gpa, arena, io, env, first, group.items) catch |err| {
-            for (group.items) |g| Io.Dir.cwd().deleteTree(io, g.dir) catch {};
-            try say(io, "dkman: {s}: {s}\n", .{ first.repo, describe(err) });
-            return err;
-        };
-        for (group.items) |g| {
-            if (g.pages == 0) {
-                try say(io, "dkman: {s}: no pages matched; the repository layout may have changed. Keeping the old copy.\n", .{g.set.id});
-                Io.Dir.cwd().deleteTree(io, g.dir) catch {};
-                continue;
+        say(io, "{s}: downloading (about {d} MB; only Markdown pages are kept)...\n", .{ first.repo, docsets.repoSize(first.repo) });
+        var attempt: usize = 1;
+        while (true) : (attempt += 1) {
+            const outcome = installGroup(gpa, arena, io, env, root, first, group.items);
+            if (outcome) |pages| {
+                result.pages += pages;
+                break;
+            } else |err| {
+                for (group.items) |g| Io.Dir.cwd().deleteTree(io, g.dir) catch {};
+                if (err == error.OutOfMemory) return error.OutOfMemory;
+                if (attempt < attempts and retryable(err)) {
+                    say(io, "dkman: {s}: {s}; trying again ({d} of {d})...\n", .{ first.repo, describe(err), attempt + 1, attempts });
+                    io.sleep(.fromSeconds(@intCast(5 * attempt)), .awake) catch {};
+                    continue;
+                }
+                say(io, "dkman: {s}: {s}; skipped (sets kept as they were):", .{ first.repo, describe(err) });
+                for (group.items) |g| say(io, " {s}", .{g.set.id});
+                say(io, "\n", .{});
+                result.failed += group.items.len;
+                break;
             }
-            try writeManifest(arena, io, g);
-            const final = try std.fs.path.join(arena, &.{ root, g.set.id });
-            Io.Dir.cwd().deleteTree(io, final) catch {};
-            try Io.Dir.rename(Io.Dir.cwd(), g.dir, Io.Dir.cwd(), final, io);
-            try say(io, "  {s}: {d} pages\n", .{ g.set.id, g.pages });
-            total += g.pages;
         }
     }
+    return result;
+}
+
+/// Downloads one repository into the staging directories of `group` and
+/// moves the finished sets into place. Returns the pages installed.
+fn installGroup(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process.Environ.Map, root: []const u8, first: *const docsets.Set, group: []Staging) !usize {
+    for (group) |*g| {
+        g.pages = 0;
+        Io.Dir.cwd().deleteTree(io, g.dir) catch {};
+        try Io.Dir.cwd().createDirPath(io, g.dir);
+    }
+    try download(gpa, arena, io, env, first, group);
+    var total: usize = 0;
+    for (group) |g| {
+        if (g.pages == 0) {
+            say(io, "dkman: {s}: no pages matched; the repository layout may have changed. Keeping the old copy.\n", .{g.set.id});
+            Io.Dir.cwd().deleteTree(io, g.dir) catch {};
+            continue;
+        }
+        try writeManifest(arena, io, g);
+        const final = try std.fs.path.join(arena, &.{ root, g.set.id });
+        replaceDir(io, g.dir, final) catch |err| {
+            if (err == error.NotOurs) say(io, "dkman: {s} exists and was not made by dkman; it is left alone (move it, or use another --docs-dir)\n", .{final});
+            return err;
+        };
+        say(io, "  {s}: {d} pages\n", .{ g.set.id, g.pages });
+        total += g.pages;
+    }
     return total;
+}
+
+/// Moves the finished `staged` directory to `final`, replacing the old copy.
+/// On Windows a directory whose files were just written is often still open
+/// in a virus scanner or the search indexer for a moment, and deleting or
+/// renaming it fails with AccessDenied; that is tried again for a while.
+fn replaceDir(io: Io, staged: []const u8, final: []const u8) !void {
+    // The documentation directory may hold the user's own files (`E:\docs`):
+    // only a set dkman installed (it has a manifest) is ever replaced.
+    if (Io.Dir.cwd().openDir(io, final, .{})) |existing| {
+        var d = existing;
+        defer d.close(io);
+        _ = d.statFile(io, manifest_name, .{}) catch return error.NotOurs;
+    } else |_| {}
+    var tries: usize = 0;
+    while (true) : (tries += 1) {
+        Io.Dir.cwd().deleteTree(io, final) catch {};
+        if (Io.Dir.rename(Io.Dir.cwd(), staged, Io.Dir.cwd(), final, io)) {
+            return;
+        } else |err| switch (err) {
+            error.AccessDenied, error.PermissionDenied, error.FileBusy, error.DirNotEmpty => {
+                if (tries >= 20) return err;
+                io.sleep(.fromMilliseconds(500), .awake) catch {};
+            },
+            else => return err,
+        }
+    }
+}
+
+/// A failure that another try may not meet: the network, not the archive's
+/// contents or the local disk.
+fn retryable(err: anyerror) bool {
+    return switch (err) {
+        error.HttpStatus, error.NotOurs => false,
+        error.AccessDenied, error.PermissionDenied, error.NoSpaceLeft, error.ReadOnlyFileSystem, error.NameTooLong, error.FileBusy => false,
+        else => true,
+    };
 }
 
 fn describe(err: anyerror) []const u8 {
     return switch (err) {
         error.HttpStatus => "the server refused the download",
-        error.BadArchive => "the download is not a valid archive",
+        error.NotOurs => "a directory of the same name is in the way",
+        error.BadArchive => "the download broke off or is not a valid archive",
+        error.ReadFailed, error.ConnectionResetByPeer, error.EndOfStream => "the connection broke off",
         error.UnknownHostName, error.NetworkUnreachable, error.ConnectionRefused, error.ConnectionTimedOut => "cannot reach github.com (no network?)",
         error.TlsInitializationFailed, error.CertificateBundleLoadFailure => "cannot set up a secure connection",
+        error.NoSpaceLeft => "the disk is full",
+        error.AccessDenied, error.PermissionDenied, error.FileBusy => "access denied (is a file in use by another program?)",
         else => @errorName(err),
     };
 }
@@ -175,11 +262,21 @@ fn download(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process.En
             var page_arena = std.heap.ArenaAllocator.init(gpa);
             defer page_arena.deinit();
             const target = (try docsets.classify(page_arena.allocator(), g.set, below, content)) orelse continue;
-            try writePage(page_arena.allocator(), io, g.dir, target, content);
+            writePage(page_arena.allocator(), io, g.dir, target, content) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                // A disk that is full or gone ends the download.
+                error.NoSpaceLeft, error.FileNotFound => return err,
+                // One page that cannot be written (a name the file system
+                // refuses, a file another program holds) is left out.
+                else => {
+                    say(io, "dkman: {s}: page {s} not written: {s}\n", .{ g.set.id, target.name, describe(err) });
+                    continue;
+                },
+            };
             g.pages += 1;
         }
         seen += 1;
-        if (seen % 2000 == 0) try say(io, "  {d} pages read...\n", .{seen});
+        if (seen % 2000 == 0) say(io, "  {d} pages read...\n", .{seen});
     }
 }
 
@@ -195,10 +292,11 @@ fn writePage(arena: Allocator, io: Io, dir: []const u8, target: docsets.Target, 
     try Io.Dir.cwd().writeFile(io, .{ .sub_path = file, .data = content });
 }
 
-fn say(io: Io, comptime fmt: []const u8, args: anytype) !void {
+/// Reports on standard error; a message that cannot be written is dropped.
+fn say(io: Io, comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch &buf;
-    try Io.File.stderr().writeStreamingAll(io, msg);
+    Io.File.stderr().writeStreamingAll(io, msg) catch {};
 }
 
 test "manifest round trip" {
@@ -212,4 +310,27 @@ test "manifest round trip" {
 test "belowTop drops the archive's top directory" {
     try std.testing.expectEqualStrings("a/b.md", belowTop("PowerShell-Docs-main/a/b.md").?);
     try std.testing.expect(belowTop("file") == null);
+}
+
+test "a directory dkman did not make is never replaced" {
+    const t = std.testing;
+    const io = t.io;
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "docs/.cmd.new/mancmd");
+    try tmp.dir.createDirPath(io, "docs/cmd");
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/cmd/mine.txt", .data = "keep" });
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const root = try tmp.dir.realPathFileAlloc(io, "docs", a);
+    const staged = try std.fs.path.join(a, &.{ root, ".cmd.new" });
+    const final = try std.fs.path.join(a, &.{ root, "cmd" });
+    try t.expectError(error.NotOurs, replaceDir(io, staged, final));
+    _ = try tmp.dir.statFile(io, "docs/cmd/mine.txt", .{});
+
+    // A set dkman installed is replaced.
+    try tmp.dir.writeFile(io, .{ .sub_path = "docs/cmd/" ++ manifest_name, .data = "id=cmd\n" });
+    try replaceDir(io, staged, final);
+    _ = try tmp.dir.statFile(io, "docs/cmd/mancmd", .{});
 }

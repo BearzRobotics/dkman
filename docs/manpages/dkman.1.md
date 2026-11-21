@@ -127,13 +127,21 @@ and a leading section operand (`dkman 3 printf`) select a section.
   `-f` and `-b` it narrows the listing the same way.
 
 `--docs-dir` DIR
-: Keep and search the downloaded documentation in DIR instead of the per-user
-  directory (also set by the `DKMAN_DOCS` environment variable). For a toolkit
-  carried on a USB drive: `dkman --docs-dir E:\\docs --fetch-docs all` once,
-  then `set DKMAN_DOCS=E:\\docs` (or the option) on any machine. The page
-  index is then kept in `DIR/.cache`, so it travels with the documentation and
-  the host machine is not written to. DIR is used by `--fetch-docs`,
-  `--list-docs`, `--set` and every search.
+: Use DIR as your documentation folder (also set by the `DKMAN_DOCS`
+  environment variable). Downloaded sets are kept in `DIR/dkman`; your own
+  pages anywhere else below DIR are found too: every Markdown file (`GUIDE.md`
+  is the page `GUIDE` in section `doc`, `tool.1.md` the page `tool` in section
+  1) and every man page (`rg.1`, `foo.8.gz`). A loose page can also be found
+  by the names of the folders it is in (`dkman -k ripgrep`). Folders starting
+  with a dot and those listed in `DIR/.dkmanignore` (one per line, below DIR;
+  `#` starts a comment) are not read. A page added deep in a folder is seen
+  after `--update-index`. For a toolkit carried on a USB drive:
+  `dkman --docs-dir E:\\docs --fetch-docs all` once, then
+  `set DKMAN_DOCS=E:\\docs` on any machine. The page index is kept in
+  `DIR/dkman/.cache`, so it travels with the documentation and the host
+  machine is not written to. Only directories with a `dkman-set` file are
+  ever replaced by `--fetch-docs`. A DIR that already holds sets directly
+  (dkman 0.6.0) keeps them there.
 
 `--list-docs`
 : List the documentation sets that can be downloaded, with their topic, version,
@@ -141,13 +149,19 @@ and a leading section operand (`dkman 3 printf`) select a section.
 
 `--fetch-docs` SET...
 : Download documentation sets (see DOCUMENTATION SETS). A SET is selected as
-  for `--set`; `all` takes every set.
+  for `--set`; `all` takes every set. A repository that cannot be downloaded
+  is tried three times, then skipped; the other sets are installed and
+  indexed, and the exit status is 1. Running the command again retries.
 
 `--no-pager`
 : Write to standard output. The pager is only used on a terminal.
 
 `--update-index`
-: Rebuild the cache of page descriptions that `-f` and `-k` read.
+: Rebuild the cache of page descriptions that `-f` and `-k` read. Each
+  downloaded set keeps its own descriptions in a `dkman-index` file, made the
+  first time the set is indexed (reading every page: minutes for `all` on a
+  slow USB drive); later rebuilds read that file instead. Delete it to have
+  the set read again.
 
 `-V`, `--version`
 : Print the version.

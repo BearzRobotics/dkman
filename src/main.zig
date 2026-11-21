@@ -348,6 +348,8 @@ const Ctx = struct {
     /// Where the page index is kept, system-wide first (read first, written first
     /// when possible), then the user's.
     cache_files: []const []const u8,
+    /// The user's documentation folder (`--docs-dir`), read for loose pages.
+    loose: ?whatis.Loose = null,
 };
 
 pub fn main(init: std.process.Init) !u8 {
@@ -405,9 +407,11 @@ fn run(init: std.process.Init) !u8 {
     if (docs_arg != null and cfg.mode == .fetch_docs) Io.Dir.cwd().createDirPath(io, docs_arg.?) catch {};
     const docs_dir: ?[]const u8 = if (docs_arg) |d| try platform.absolute(arena, io, d) else null;
     if (cfg.mode == .list_docs) return runListDocs(gpa, arena, io, env, docs_dir);
+    // A fetch in which some sets failed still indexes the ones installed.
+    var fetch_status: u8 = 0;
     if (cfg.mode == .fetch_docs) {
-        const status = try runFetchDocs(gpa, arena, io, env, cfg, docs_dir);
-        if (status != 0) return status;
+        fetch_status = try runFetchDocs(gpa, arena, io, env, cfg, docs_dir);
+        if (fetch_status != 0 and fetch_status != exit_failed) return fetch_status;
         // Build the page index now (it can take half a minute for everything),
         // not at the first search.
         cfg.mode = .update_index;
@@ -444,6 +448,13 @@ fn run(init: std.process.Init) !u8 {
     else
         &paths.default_sections;
 
+    // The user's own pages in the documentation folder, unless `--set` or
+    // `-M`/MANPATH narrowed the search.
+    const loose: ?whatis.Loose = if (docs_dir != null and cfg.doc_set == null and cfg.manpath == null and nonEmpty(env.get("MANPATH")) == null)
+        try looseDocs(arena, io, docs_dir.?)
+    else
+        null;
+
     const ctx: Ctx = .{
         .gpa = gpa,
         .arena = arena,
@@ -455,10 +466,11 @@ fn run(init: std.process.Init) !u8 {
         .ignore_case = !cfg.match_case,
         .use_pager = cfg.pager and stdout_tty and !cfg.html,
         .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")) orelse platform.default_pager,
-        .cache_files = try cacheFiles(arena, io, env, dirs, docs_dir),
+        .cache_files = try cacheFiles(arena, io, env, dirs, loose, docs_dir),
+        .loose = loose,
     };
 
-    return switch (cfg.mode) {
+    const status = try switch (cfg.mode) {
         .version, .list_docs, .fetch_docs => unreachable,
         .local => runLocal(ctx, cfg),
         .show, .where => runShow(ctx, cfg),
@@ -467,6 +479,7 @@ fn run(init: std.process.Init) !u8 {
         .update_index => runUpdate(ctx, cfg),
         .browse => runBrowse(ctx, cfg),
     };
+    return if (status == 0) fetch_status else status;
 }
 
 // ------------------------------------------------------------------- modes
@@ -596,7 +609,7 @@ fn suggestNames(ctx: Ctx, name: []const u8) !void {
 }
 
 fn loadIndex(ctx: Ctx, force: bool) ![]whatis.Entry {
-    const loaded = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_files, force, "dkman: building the page index (first use, or the manual directories changed)...\n");
+    const loaded = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.loose, ctx.cache_files, force, "dkman: building the page index (first use, or the manual directories changed)...\n");
     return loaded.entries;
 }
 
@@ -667,7 +680,7 @@ fn runGlobal(ctx: Ctx, cfg: Config) !u8 {
 }
 
 fn runUpdate(ctx: Ctx, cfg: Config) !u8 {
-    const loaded = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.cache_files, true, null);
+    const loaded = try whatis.load(ctx.gpa, ctx.arena, ctx.io, ctx.dirs, ctx.loose, ctx.cache_files, true, null);
     const to = loaded.written_to orelse {
         try diag(ctx.io, "dkman: cannot write the page index to {s}\n", .{try std.mem.join(ctx.arena, " or ", ctx.cache_files)});
         return exit_failed;
@@ -677,7 +690,10 @@ fn runUpdate(ctx: Ctx, cfg: Config) !u8 {
 }
 
 fn runBrowse(ctx: Ctx, cfg: Config) !u8 {
-    const pages = try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null, false);
+    var page_list: std.ArrayList(paths.Page) = .empty;
+    try page_list.appendSlice(ctx.arena, try paths.scan(ctx.arena, ctx.io, ctx.dirs, null, null, false));
+    if (ctx.loose) |l| try page_list.appendSlice(ctx.arena, try paths.scanLoose(ctx.arena, ctx.io, l.root, l.skip));
+    const pages = page_list.items;
     if (pages.len == 0) {
         try diag(ctx.io, "dkman: no manual pages found in the search path\n", .{});
         return exit_not_found;
@@ -774,22 +790,47 @@ fn readConf(arena: Allocator, io: Io, env: *const std.process.Environ.Map) !path
     return .{};
 }
 
+/// Name of the file in the documentation folder listing folders (one per
+/// line, below the folder; `#` starts a comment) not to read loose pages from.
+const ignore_file = ".dkmanignore";
+
+/// The user's documentation folder `root` as a source of loose pages: its
+/// `.dkmanignore` folders and dkman's own subdirectory are left out.
+fn looseDocs(arena: Allocator, io: Io, root: []const u8) !whatis.Loose {
+    var skip: std.ArrayList([]const u8) = .empty;
+    try skip.append(arena, platform.sets_subdir);
+    const path = try std.fs.path.join(arena, &.{ root, ignore_file });
+    if (Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(64 * 1024))) |text| {
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |raw| {
+            const line = std.mem.trim(u8, raw, " \t\r");
+            if (line.len == 0 or line[0] == '#') continue;
+            try skip.append(arena, line);
+        }
+    } else |_| {}
+    return .{ .root = root, .skip = skip.items };
+}
+
 /// Where the page index lives, one file per set of manual directories: the
 /// system-wide cache (made by `mandb` run as root or administrator, read by
 /// everyone), then the user's.
-fn cacheFiles(arena: Allocator, io: Io, env: *const std.process.Environ.Map, dirs: []const []const u8, docs_dir: ?[]const u8) ![]const []const u8 {
+fn cacheFiles(arena: Allocator, io: Io, env: *const std.process.Environ.Map, dirs: []const []const u8, loose: ?whatis.Loose, docs_dir: ?[]const u8) ![]const []const u8 {
     var hash = std.hash.Wyhash.init(0);
     for (dirs) |d| {
         hash.update(d);
         hash.update(";");
     }
+    if (loose) |l| {
+        hash.update("loose:");
+        hash.update(l.root);
+    }
     const name = try std.fmt.allocPrint(arena, "whatis-{x}", .{hash.final()});
     var out: std.ArrayList([]const u8) = .empty;
     // With a documentation directory of one's own (a USB drive) the index is
-    // kept there first: it travels with the docs and the host is left alone.
-    if (docs_dir) |d| {
-        _ = io;
-        try out.append(arena, try std.fs.path.join(arena, &.{ d, ".cache", name }));
+    // kept there first, beside the sets: it travels with the docs and the
+    // host is left alone.
+    if (docs_dir != null) {
+        if (try platform.docsRoot(arena, io, env, docs_dir)) |d| try out.append(arena, try std.fs.path.join(arena, &.{ d, ".cache", name }));
     }
     for (try platform.cacheDirs(arena, env)) |d| try out.append(arena, try std.fs.path.join(arena, &.{ d, name }));
     return out.items;
@@ -799,7 +840,7 @@ fn cacheFiles(arena: Allocator, io: Io, env: *const std.process.Environ.Map, dir
 
 /// The downloaded sets `selector` (comma separated) names, as manual directories.
 fn selectSets(arena: Allocator, io: Io, env: *const std.process.Environ.Map, selector: []const u8, docs_dir: ?[]const u8) ![]const []const u8 {
-    const root = (try platform.docsRoot(arena, env, docs_dir)) orelse return &.{};
+    const root = (try platform.docsRoot(arena, io, env, docs_dir)) orelse return &.{};
     var out: std.ArrayList([]const u8) = .empty;
     for (try fetch.installed(arena, io, root)) |info| {
         var words = std.mem.tokenizeAny(u8, selector, ",");
@@ -815,7 +856,7 @@ fn selectSets(arena: Allocator, io: Io, env: *const std.process.Environ.Map, sel
 
 fn runListDocs(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process.Environ.Map, docs_dir: ?[]const u8) !u8 {
     _ = gpa;
-    const root = try platform.docsRoot(arena, env, docs_dir);
+    const root = try platform.docsRoot(arena, io, env, docs_dir);
     const have = if (root) |r| try fetch.installed(arena, io, r) else &[_]fetch.Info{};
     var out: std.ArrayList(u8) = .empty;
     try out.print(arena, "{s:<20} {s:<20} {s:<8} {s:>9}  {s}\n", .{ "SET", "TOPIC", "VERSION", "DOWNLOAD", "CONTENTS" });
@@ -837,7 +878,7 @@ fn runFetchDocs(gpa: Allocator, arena: Allocator, io: Io, env: *const std.proces
         try diag(io, "dkman: name the sets to download; dkman --list-docs shows them\n", .{});
         return exit_usage;
     }
-    const root = (try platform.docsRoot(arena, env, docs_dir)) orelse {
+    const root = (try platform.docsRoot(arena, io, env, docs_dir)) orelse {
         try diag(io, "dkman: cannot tell where to keep documentation (no LOCALAPPDATA, XDG_DATA_HOME or HOME)\n", .{});
         return exit_failed;
     };
@@ -858,8 +899,12 @@ fn runFetchDocs(gpa: Allocator, arena: Allocator, io: Io, env: *const std.proces
             return exit_usage;
         }
     }
-    const pages = fetch.install(gpa, arena, io, env, root, chosen.items) catch return exit_failed;
-    try printLine(io, try std.fmt.allocPrint(arena, "{d} pages installed in {s}; the page index follows", .{ pages, root }));
+    const result = try fetch.install(gpa, arena, io, env, root, chosen.items);
+    try printLine(io, try std.fmt.allocPrint(arena, "{d} pages installed in {s}; the page index follows", .{ result.pages, root }));
+    if (result.failed > 0) {
+        try diag(io, "dkman: {d} of {d} sets could not be downloaded (see above); run the same command again to retry them\n", .{ result.failed, chosen.items.len });
+        return exit_failed;
+    }
     return 0;
 }
 

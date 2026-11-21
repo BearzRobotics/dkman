@@ -145,12 +145,35 @@ pub fn absolute(arena: Allocator, io: Io, path: []const u8) Allocator.Error![]co
 
 /// Where fetched documentation sets live: one directory per set, each a
 /// manual directory (`manps`, `mancmd`, ...). `override` (from `--docs-dir` or
-/// `DKMAN_DOCS`, a toolkit on a USB drive for one) is the directory itself;
-/// otherwise `<data>/docs`.
-pub fn docsRoot(arena: Allocator, env: *const Env, override: ?[]const u8) Allocator.Error!?[]const u8 {
-    if (override) |o| return o;
+/// `DKMAN_DOCS`) is the user's documentation folder (a toolkit on a USB drive
+/// for one): the sets go in its `dkman` subdirectory, and the rest of it holds
+/// the user's own pages (see `paths.scanLoose`). A folder that already holds
+/// sets itself (dkman 0.6.0's layout) keeps them there. Otherwise `<data>/docs`.
+pub fn docsRoot(arena: Allocator, io: Io, env: *const Env, override: ?[]const u8) Allocator.Error!?[]const u8 {
+    if (override) |o| {
+        if (holdsSets(io, o)) return o;
+        return try std.fs.path.join(arena, &.{ o, sets_subdir });
+    }
     const data = (try dataDir(arena, env)) orelse return null;
     return try std.fs.path.join(arena, &.{ data, "docs" });
+}
+
+/// The subdirectory of a documentation folder that dkman's sets live in.
+pub const sets_subdir = "dkman";
+
+/// Does `dir` have an installed set directly inside it?
+fn holdsSets(io: Io, dir_path: []const u8) bool {
+    var dir = Io.Dir.cwd().openDir(io, dir_path, .{ .iterate = true }) catch return false;
+    defer dir.close(io);
+    var it = dir.iterate();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    while (it.next(io) catch null) |e| {
+        if (e.kind != .directory or e.name[0] == '.') continue;
+        const manifest = std.fmt.bufPrint(&buf, "{s}{c}{s}", .{ e.name, std.fs.path.sep, @import("fetch.zig").manifest_name }) catch continue;
+        _ = dir.statFile(io, manifest, .{}) catch continue;
+        return true;
+    }
+    return false;
 }
 
 fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
@@ -159,7 +182,7 @@ fn lessThanStr(_: void, a: []const u8, b: []const u8) bool {
 
 /// The fetched sets that exist, as manual directories, sorted by name.
 pub fn docDirs(arena: Allocator, io: Io, env: *const Env, override: ?[]const u8) Allocator.Error![]const []const u8 {
-    const root = (try docsRoot(arena, env, override)) orelse return &.{};
+    const root = (try docsRoot(arena, io, env, override)) orelse return &.{};
     var dir = Io.Dir.cwd().openDir(io, root, .{ .iterate = true }) catch return &.{};
     defer dir.close(io);
     var out: std.ArrayList([]const u8) = .empty;
@@ -167,6 +190,10 @@ pub fn docDirs(arena: Allocator, io: Io, env: *const Env, override: ?[]const u8)
     while (it.next(io) catch null) |e| {
         // `.name.new` is a set being downloaded.
         if (e.kind != .directory or e.name[0] == '.') continue;
+        // Only sets dkman installed: the directory may hold the user's own
+        // documents beside them.
+        const manifest = try std.fs.path.join(arena, &.{ e.name, @import("fetch.zig").manifest_name });
+        _ = dir.statFile(io, manifest, .{}) catch continue;
         try out.append(arena, try std.fs.path.join(arena, &.{ root, e.name }));
     }
     std.mem.sort([]const u8, out.items, {}, lessThanStr);
@@ -209,6 +236,10 @@ test "docDirs lists the fetched sets and skips downloads in progress" {
     try tmp.dir.createDirPath(io, "data/dkman/docs/powershell-7.6/manps");
     try tmp.dir.createDirPath(io, "data/dkman/docs/cmd/mancmd");
     try tmp.dir.createDirPath(io, "data/dkman/docs/.wsl.new/manwsl");
+    try tmp.dir.writeFile(io, .{ .sub_path = "data/dkman/docs/powershell-7.6/dkman-set", .data = "id=powershell-7.6\n" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "data/dkman/docs/cmd/dkman-set", .data = "id=cmd\n" });
+    // The user's own documents beside the sets are not a set.
+    try tmp.dir.createDirPath(io, "data/dkman/docs/bash/manual");
     var arena_state = std.heap.ArenaAllocator.init(t.allocator);
     defer arena_state.deinit();
     const a = arena_state.allocator();
