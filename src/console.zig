@@ -44,6 +44,27 @@ const win = if (is_windows) struct {
     extern "kernel32" fn SetConsoleCP(cp: u32) callconv(.winapi) i32;
     extern "kernel32" fn GetConsoleScreenBufferInfo(h: HANDLE, info: *ScreenBufferInfo) callconv(.winapi) i32;
     extern "kernel32" fn WaitForSingleObject(h: HANDLE, ms: u32) callconv(.winapi) u32;
+    extern "kernel32" fn PeekConsoleInputW(h: HANDLE, buf: *InputRecord, len: u32, read: *u32) callconv(.winapi) i32;
+    extern "kernel32" fn ReadConsoleInputW(h: HANDLE, buf: *InputRecord, len: u32, read: *u32) callconv(.winapi) i32;
+    extern "kernel32" fn GetTickCount64() callconv(.winapi) u64;
+
+    /// `INPUT_RECORD` with the `KEY_EVENT_RECORD` member of its union; the
+    /// other members (mouse, window size, menu, focus) fit in its 16 bytes.
+    const InputRecord = extern struct {
+        event_type: u16,
+        event: extern union {
+            key: extern struct {
+                key_down: i32,
+                repeat_count: u16,
+                virtual_key_code: u16,
+                virtual_scan_code: u16,
+                char: u16,
+                control_key_state: u32,
+            },
+            other: [16]u8,
+        },
+    };
+    const key_event: u16 = 0x0001;
     extern "kernel32" fn ReadFile(h: HANDLE, buf: [*]u8, len: u32, read: *u32, overlapped: ?*anyopaque) callconv(.winapi) i32;
 
     fn handle(which: u32) ?HANDLE {
@@ -107,8 +128,28 @@ pub fn terminalSize() Size {
 pub fn inputPending(timeout_ms: i32) bool {
     if (is_windows) {
         const in = win.handle(win.std_input) orelse return false;
-        // 0 is WAIT_OBJECT_0: the handle is signalled, input is waiting.
-        return win.WaitForSingleObject(in, @intCast(timeout_ms)) == 0;
+        // The console's input handle is signalled for any event in its queue,
+        // also those ReadFile never returns: a key being released (the Enter
+        // that started dkman is the first thing there), a key with no
+        // character (Shift), focus, menu and window-size events. Taking one
+        // of those for a key made the browser skip drawing and wait in
+        // ReadFile until a real key came. They are dropped here.
+        const deadline = win.GetTickCount64() + @as(u64, @intCast(@max(timeout_ms, 0)));
+        while (true) {
+            var rec: win.InputRecord = undefined;
+            var n: u32 = 0;
+            // Not a console (redirected input): any data is input.
+            if (win.PeekConsoleInputW(in, &rec, 1, &n) == 0) return win.WaitForSingleObject(in, @intCast(@max(timeout_ms, 0))) == 0;
+            if (n > 0) {
+                if (rec.event_type == win.key_event and rec.event.key.key_down != 0 and rec.event.key.char != 0) return true;
+                if (win.ReadConsoleInputW(in, &rec, 1, &n) == 0) return false;
+                continue;
+            }
+            const now = win.GetTickCount64();
+            if (now >= deadline) return false;
+            // 0 is WAIT_OBJECT_0: something arrived; look at it.
+            if (win.WaitForSingleObject(in, @intCast(deadline - now)) != 0) return false;
+        }
     }
     var fds = [_]posix.pollfd{.{ .fd = 0, .events = posix.POLL.IN }};
     const n = posix.poll(&fds, timeout_ms) catch return false;
