@@ -1,6 +1,7 @@
 //! dkman: find, search and show manual pages and Markdown documents.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const build_options = @import("build_options");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
@@ -11,6 +12,10 @@ const render = @import("render.zig");
 const pager = @import("pager.zig");
 const search = @import("search.zig");
 const whatis = @import("whatis.zig");
+const console = @import("console.zig");
+const platform = @import("platform.zig");
+const docsets = @import("docsets.zig");
+const fetch = @import("fetch.zig");
 
 const usage =
     \\usage: dkman [options] [SECTION] NAME...
@@ -33,9 +38,15 @@ const usage =
     \\  --wildcard       with -f/-k: words are shell wildcards
     \\  --exact          with -k: words must equal a name or a word of the description
     \\  -b, --browse     browse pages: search on the left, preview on the right (names and descriptions)
-    \\  -M, --manpath P  manual directories (colon separated) instead of $MANPATH
+    \\  -M, --manpath P  manual directories (colon separated, semicolon on Windows) instead of $MANPATH
+    \\  --set LIST       only the downloaded documentation sets named by LIST: an id (powershell-5.1),
+    \\                   a family (powershell), a topic (windows server) or a version (5.1)
+    \\  --docs-dir DIR   where downloaded documentation is kept and searched (default: per user;
+    \\                   or $DKMAN_DOCS), for example a folder on a USB drive
+    \\  --list-docs      list the documentation sets that can be downloaded, and which are
+    \\  --fetch-docs SET...  download documentation sets from Microsoft's GitHub (or `all`)
     \\  -L, --locale L   language of the pages (default from LC_ALL, LC_MESSAGES, LANG)
-    \\  -P, --pager CMD  pager command (default: $MANPAGER, $PAGER, less)
+    \\  -P, --pager CMD  pager command (default: $MANPAGER, $PAGER, less; more on Windows)
     \\  --width N        wrap at N columns (default: $MANWIDTH, $COLUMNS, the terminal, 80)
     \\  --nj             do not justify the text (right margin ragged)
     \\  --ascii          ASCII characters only (default unless the locale is UTF-8)
@@ -54,7 +65,7 @@ const exit_usage: u8 = 1;
 const exit_failed: u8 = 2;
 const exit_not_found: u8 = 16;
 
-const Mode = enum { show, local, where, whatis, apropos, global_apropos, browse, update_index, version };
+const Mode = enum { show, local, where, whatis, apropos, global_apropos, browse, update_index, version, list_docs, fetch_docs };
 
 const Config = struct {
     mode: Mode = .show,
@@ -77,6 +88,10 @@ const Config = struct {
     /// With -f/-k: how words are compared; null is the mode's default.
     match: ?whatis.Mode = null,
     manpath: ?[]const u8 = null,
+    /// `--docs-dir`: where the downloaded documentation sets are.
+    docs_dir: ?[]const u8 = null,
+    /// `--set`: only these downloaded documentation sets.
+    doc_set: ?[]const u8 = null,
     locale: ?[]const u8 = null,
     /// From `-s`: the sections to look in, in order.
     sections: []const []const u8 = &.{},
@@ -87,7 +102,7 @@ const Config = struct {
 
 const ParseError = error{ Usage, Unsupported };
 
-const Opt = enum { no_justify, long_lines, unsupported, match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored };
+const Opt = enum { no_justify, long_lines, unsupported, match_case, ignore_case, extension, html, regex, wildcard, exact, local, where, whatis, apropos, global, browse, all, sections, manpath, pager, locale, width, color, no_color, no_pager, ascii, update_index, version, help, ignored, list_docs, fetch_docs, doc_set, docs_dir };
 
 const OptSpec = struct { short: u8 = 0, long: []const u8 = "", opt: Opt, value: bool = false };
 
@@ -118,6 +133,10 @@ const option_table = [_]OptSpec{
     .{ .long = "no-pager", .opt = .no_pager },
     .{ .short = '7', .long = "ascii", .opt = .ascii },
     .{ .long = "update-index", .opt = .update_index },
+    .{ .long = "list-docs", .opt = .list_docs },
+    .{ .long = "fetch-docs", .opt = .fetch_docs },
+    .{ .long = "set", .opt = .doc_set, .value = true },
+    .{ .long = "docs-dir", .opt = .docs_dir, .value = true },
     .{ .short = 'V', .long = "version", .opt = .version },
     .{ .short = 'h', .long = "help", .opt = .help },
     .{ .short = '?', .long = "usage", .opt = .help },
@@ -141,7 +160,9 @@ const option_table = [_]OptSpec{
 const Prog = enum { man, whatis, apropos, manpath, mandb };
 
 fn progOf(argv0: []const u8) Prog {
-    const base = std.fs.path.basename(argv0);
+    var base = std.fs.path.basename(argv0);
+    // `man.exe`, `WHATIS.EXE`.
+    if (base.len > 4 and std.ascii.eqlIgnoreCase(base[base.len - 4 ..], ".exe")) base = base[0 .. base.len - 4];
     inline for (.{ "whatis", "apropos", "manpath", "mandb" }) |name| {
         if (std.mem.eql(u8, base, name)) return @field(Prog, name);
     }
@@ -244,6 +265,10 @@ fn apply(cfg: *Config, opt: Opt, value: ?[]const u8) (ParseError || Allocator.Er
         .global => cfg.mode = .global_apropos,
         .browse => cfg.mode = .browse,
         .update_index => cfg.mode = .update_index,
+        .list_docs => cfg.mode = .list_docs,
+        .fetch_docs => cfg.mode = .fetch_docs,
+        .doc_set => cfg.doc_set = value,
+        .docs_dir => cfg.docs_dir = value,
         .version => cfg.mode = .version,
         .all => cfg.all = true,
         .match_case => cfg.match_case = true,
@@ -283,7 +308,11 @@ fn splitList(text: []const u8) ParseError![]const []const u8 {
     return list_storage[0..n];
 }
 
+/// Sections of the downloaded documentation sets (see `docsets.zig`).
+const doc_sections = [_][]const u8{ "ps", "cmd", "ws", "psguide", "sys", "wsl", "win32", "winguide" };
+
 fn isSection(s: []const u8) bool {
+    for (doc_sections) |d| if (std.mem.eql(u8, s, d)) return true;
     return s.len > 0 and s.len <= 4 and (std.ascii.isDigit(s[0]) or s[0] == 'n' or s[0] == 'l') and
         std.ascii.isAlphanumeric(s[s.len - 1]);
 }
@@ -337,7 +366,7 @@ fn run(init: std.process.Init) !u8 {
     const given = try init.minimal.args.toSlice(arena);
     const args = try withManopt(arena, given, init.environ_map.get("MANOPT"));
 
-    const cfg = parseArgs(arena, args) catch |err| switch (err) {
+    var cfg = parseArgs(arena, args) catch |err| switch (err) {
         error.Usage => {
             try Io.File.stderr().writeStreamingAll(io, usage);
             return exit_usage;
@@ -356,19 +385,54 @@ fn run(init: std.process.Init) !u8 {
 
     const stdout_tty = Io.File.stdout().isTty(io) catch false;
     const no_color_env = if (env.get("NO_COLOR")) |v| v.len > 0 else false;
-    const use_color = cfg.color orelse (stdout_tty and !no_color_env);
+    // On Windows the console must be told to understand ANSI styles and UTF-8;
+    // an old console that cannot gets plain text.
+    const console_ready = if (stdout_tty) console.prepareOutput() else true;
+    const use_color = cfg.color orelse (stdout_tty and console_ready and !no_color_env);
     const opts: render.Options = .{
         .width = cfg.width orelse try widthFor(env, stdout_tty),
         .color = use_color,
-        .ascii = cfg.ascii orelse !utf8Locale(env),
+        // Windows consoles show UTF-8 once set up; a pipe or file may be read in any code page.
+        .ascii = cfg.ascii orelse !(utf8Locale(env) or (stdout_tty and console_ready and console.outputIsUtf8Console())),
         .html = cfg.html,
         .justify = cfg.justify,
     };
 
-    // Manual directories: -M, MANPATH, or derived from PATH and the config file.
-    const conf = try readConf(gpa, arena, io);
-    const derived = try paths.deriveManpath(arena, io, env.get("PATH"), conf);
-    const base_dirs = try paths.searchDirs(arena, cfg.manpath orelse env.get("MANPATH"), derived);
+    // The documentation directory: --docs-dir, DKMAN_DOCS, else the per-user one.
+    const docs_arg = cfg.docs_dir orelse nonEmpty(env.get("DKMAN_DOCS"));
+    // A directory about to be filled must exist to be made absolute (the page
+    // index is keyed by the directory's name).
+    if (docs_arg != null and cfg.mode == .fetch_docs) Io.Dir.cwd().createDirPath(io, docs_arg.?) catch {};
+    const docs_dir: ?[]const u8 = if (docs_arg) |d| try platform.absolute(arena, io, d) else null;
+    if (cfg.mode == .list_docs) return runListDocs(gpa, arena, io, env, docs_dir);
+    if (cfg.mode == .fetch_docs) {
+        const status = try runFetchDocs(gpa, arena, io, env, cfg, docs_dir);
+        if (status != 0) return status;
+        // Build the page index now (it can take half a minute for everything),
+        // not at the first search.
+        cfg.mode = .update_index;
+        cfg.quiet = false;
+        cfg.doc_set = null;
+        try diag(io, "dkman: building the page index...\n", .{});
+    }
+
+    // Manual directories: -M, MANPATH, or derived from PATH and the config file;
+    // the downloaded documentation sets and, on Windows, the usual places of
+    // man pages are always searched when MANPATH does not say otherwise.
+    const conf = try readConf(arena, io, env);
+    var derived_list: std.ArrayList([]const u8) = .empty;
+    try derived_list.appendSlice(arena, try paths.deriveManpath(arena, io, env.get("PATH"), conf));
+    if (builtin.os.tag == .windows) try derived_list.appendSlice(arena, try platform.windowsManDirs(arena, io, env));
+    try derived_list.appendSlice(arena, try platform.docDirs(arena, io, env, docs_dir));
+    var base_dirs = try paths.searchDirs(arena, cfg.manpath orelse env.get("MANPATH"), derived_list.items);
+    // `--set`: only the downloaded sets it names.
+    if (cfg.doc_set) |sel| {
+        base_dirs = try selectSets(arena, io, env, sel, docs_dir);
+        if (base_dirs.len == 0) {
+            try diag(io, "dkman: no downloaded documentation set matches {s} (see dkman --list-docs)\n", .{sel});
+            return exit_not_found;
+        }
+    }
     const dirs = try paths.withLocale(arena, base_dirs, cfg.locale orelse localeFromEnv(env));
 
     const order: []const []const u8 = if (cfg.sections.len > 0)
@@ -390,12 +454,12 @@ fn run(init: std.process.Init) !u8 {
         .opts = opts,
         .ignore_case = !cfg.match_case,
         .use_pager = cfg.pager and stdout_tty and !cfg.html,
-        .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")) orelse "less",
-        .cache_files = try cacheFiles(arena, env, dirs),
+        .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")) orelse platform.default_pager,
+        .cache_files = try cacheFiles(arena, io, env, dirs, docs_dir),
     };
 
     return switch (cfg.mode) {
-        .version => unreachable,
+        .version, .list_docs, .fetch_docs => unreachable,
         .local => runLocal(ctx, cfg),
         .show, .where => runShow(ctx, cfg),
         .whatis, .apropos => runWhatis(ctx, cfg),
@@ -425,7 +489,7 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
     if (cfg.words.len == 0) {
         // `man -w` alone: where the pages are looked for.
         if (cfg.mode == .where) {
-            try printLine(ctx.io, try std.mem.join(ctx.arena, ":", ctx.base_dirs));
+            try printLine(ctx.io, try std.mem.join(ctx.arena, &.{platform.list_separator}, ctx.base_dirs));
             return 0;
         }
         return usageError(ctx.io);
@@ -433,7 +497,7 @@ fn runShow(ctx: Ctx, cfg: Config) !u8 {
     var status: u8 = 0;
     for (cfg.words) |arg| {
         // A name with a slash is a path, as with man(1).
-        if (std.mem.indexOfScalar(u8, arg, '/') != null) {
+        if (platform.looksLikePath(arg)) {
             if (cfg.mode == .where) {
                 try printLine(ctx.io, arg);
             } else if (try renderPath(ctx, arg)) |text| {
@@ -702,35 +766,101 @@ fn utf8Locale(env: *const std.process.Environ.Map) bool {
     return false;
 }
 
-fn readConf(gpa: Allocator, arena: Allocator, io: Io) !paths.Conf {
-    _ = gpa;
-    for ([_][]const u8{ "/etc/manpath.config", "/etc/man_db.conf" }) |f| {
+fn readConf(arena: Allocator, io: Io, env: *const std.process.Environ.Map) !paths.Conf {
+    for (try platform.configFiles(arena, env)) |f| {
         const text = Io.Dir.cwd().readFileAlloc(io, f, arena, .limited(1 << 20)) catch continue;
         return paths.parseConf(arena, text);
     }
     return .{};
 }
 
-/// Where the page index lives, one file per set of manual directories:
-/// `/var/cache/dkman/` (made by `mandb` run as root, read by everyone), and
-/// `$XDG_CACHE_HOME/dkman/` or `~/.cache/dkman/` for one user.
-fn cacheFiles(arena: Allocator, env: *const std.process.Environ.Map, dirs: []const []const u8) ![]const []const u8 {
+/// Where the page index lives, one file per set of manual directories: the
+/// system-wide cache (made by `mandb` run as root or administrator, read by
+/// everyone), then the user's.
+fn cacheFiles(arena: Allocator, io: Io, env: *const std.process.Environ.Map, dirs: []const []const u8, docs_dir: ?[]const u8) ![]const []const u8 {
     var hash = std.hash.Wyhash.init(0);
     for (dirs) |d| {
         hash.update(d);
-        hash.update(":");
+        hash.update(";");
     }
     const name = try std.fmt.allocPrint(arena, "whatis-{x}", .{hash.final()});
     var out: std.ArrayList([]const u8) = .empty;
-    try out.append(arena, try std.fs.path.join(arena, &.{ "/var/cache/dkman", name }));
-    const base = if (nonEmpty(env.get("XDG_CACHE_HOME"))) |x|
-        try arena.dupe(u8, x)
-    else if (nonEmpty(env.get("HOME"))) |h|
-        try std.fs.path.join(arena, &.{ h, ".cache" })
-    else
-        return out.items;
-    try out.append(arena, try std.fs.path.join(arena, &.{ base, "dkman", name }));
+    // With a documentation directory of one's own (a USB drive) the index is
+    // kept there first: it travels with the docs and the host is left alone.
+    if (docs_dir) |d| {
+        _ = io;
+        try out.append(arena, try std.fs.path.join(arena, &.{ d, ".cache", name }));
+    }
+    for (try platform.cacheDirs(arena, env)) |d| try out.append(arena, try std.fs.path.join(arena, &.{ d, name }));
     return out.items;
+}
+
+// ------------------------------------------------------ documentation sets
+
+/// The downloaded sets `selector` (comma separated) names, as manual directories.
+fn selectSets(arena: Allocator, io: Io, env: *const std.process.Environ.Map, selector: []const u8, docs_dir: ?[]const u8) ![]const []const u8 {
+    const root = (try platform.docsRoot(arena, env, docs_dir)) orelse return &.{};
+    var out: std.ArrayList([]const u8) = .empty;
+    for (try fetch.installed(arena, io, root)) |info| {
+        var words = std.mem.tokenizeAny(u8, selector, ",");
+        while (words.next()) |w| {
+            if (docsets.matches(info.id, info.topic, info.version, std.mem.trim(u8, w, " \t"))) {
+                try out.append(arena, try std.fs.path.join(arena, &.{ root, info.id }));
+                break;
+            }
+        }
+    }
+    return out.items;
+}
+
+fn runListDocs(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process.Environ.Map, docs_dir: ?[]const u8) !u8 {
+    _ = gpa;
+    const root = try platform.docsRoot(arena, env, docs_dir);
+    const have = if (root) |r| try fetch.installed(arena, io, r) else &[_]fetch.Info{};
+    var out: std.ArrayList(u8) = .empty;
+    try out.print(arena, "{s:<20} {s:<20} {s:<8} {s:>9}  {s}\n", .{ "SET", "TOPIC", "VERSION", "DOWNLOAD", "CONTENTS" });
+    for (docsets.all) |set| {
+        var status: []const u8 = "";
+        for (have) |h| if (std.mem.eql(u8, h.id, set.id)) {
+            status = try std.fmt.allocPrint(arena, " [installed, {d} pages]", .{h.pages});
+        };
+        try out.print(arena, "{s:<20} {s:<20} {s:<8} {d:>6} MB  {s}{s}\n", .{ set.id, set.topic, set.version, docsets.repoSize(set.repo), set.title, status });
+    }
+    try out.print(arena, "\nDownload with: dkman --fetch-docs SET... (or a family such as powershell, a topic or a version; all for everything).\nSets of one repository share a download, which is of the whole repository; only Markdown pages are kept.\n", .{});
+    if (root) |r| try out.print(arena, "Installed in {s}\n", .{r});
+    try pager.writeStdout(io, out.items);
+    return 0;
+}
+
+fn runFetchDocs(gpa: Allocator, arena: Allocator, io: Io, env: *const std.process.Environ.Map, cfg: Config, docs_dir: ?[]const u8) !u8 {
+    if (cfg.words.len == 0) {
+        try diag(io, "dkman: name the sets to download; dkman --list-docs shows them\n", .{});
+        return exit_usage;
+    }
+    const root = (try platform.docsRoot(arena, env, docs_dir)) orelse {
+        try diag(io, "dkman: cannot tell where to keep documentation (no LOCALAPPDATA, XDG_DATA_HOME or HOME)\n", .{});
+        return exit_failed;
+    };
+    var chosen: std.ArrayList(*const docsets.Set) = .empty;
+    for (cfg.words) |w| {
+        var any = false;
+        for (&docsets.all) |*set| {
+            if (!std.ascii.eqlIgnoreCase(w, "all") and !docsets.matches(set.id, set.topic, set.version, w)) continue;
+            any = true;
+            var dup = false;
+            for (chosen.items) |c| if (c == set) {
+                dup = true;
+            };
+            if (!dup) try chosen.append(arena, set);
+        }
+        if (!any) {
+            try diag(io, "dkman: no documentation set called {s} (see dkman --list-docs)\n", .{w});
+            return exit_usage;
+        }
+    }
+    const pages = fetch.install(gpa, arena, io, env, root, chosen.items) catch return exit_failed;
+    try printLine(io, try std.fmt.allocPrint(arena, "{d} pages installed in {s}; the page index follows", .{ pages, root }));
+    return 0;
 }
 
 fn printLine(io: Io, s: []const u8) !void {
@@ -781,6 +911,10 @@ test {
     _ = @import("whatis.zig");
     _ = @import("bzip2.zig");
     _ = @import("glob.zig");
+    _ = @import("platform.zig");
+    _ = @import("docsets.zig");
+    _ = @import("fetch.zig");
+    _ = @import("console.zig");
 }
 
 test "argument parsing" {
@@ -792,6 +926,11 @@ test "argument parsing" {
     const c1 = try parseArgs(a, &.{ "dkman", "3", "printf" });
     try t.expectEqualStrings("3", c1.section.?);
     try t.expectEqual(@as(usize, 1), c1.words.len);
+
+    // A documentation section before a name; alone it is a page name.
+    const cs = try parseArgs(a, &.{ "dkman", "ps", "Get-Item" });
+    try t.expectEqualStrings("ps", cs.section.?);
+    try t.expect((try parseArgs(a, &.{ "dkman", "ps" })).section == null);
 
     // A single number is a page name, not a section.
     const c2 = try parseArgs(a, &.{ "dkman", "7" });

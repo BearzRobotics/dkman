@@ -30,6 +30,10 @@ _arguments -s \
     '--no-pager[write to standard output]' \
     '(-7 --ascii)'{-7,--ascii}'[ASCII characters only]' \
     '--update-index[rebuild the description cache]' \
+    '--list-docs[list downloadable documentation sets]' \
+    '--fetch-docs[download documentation sets]' \
+    '--set[only these downloaded documentation sets]:set:' \
+    '--docs-dir[directory of downloaded documentation]:directory:_files -/' \
     '(-V --version)'{-V,--version}'[print the version]' \
     '(-h --help)'{-h,--help}'[print usage]' \
     '*:manual page:_dkman_pages'

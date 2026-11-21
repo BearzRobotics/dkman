@@ -1,7 +1,7 @@
 .{
     .name = .dkman,
     .fingerprint = 0xd0541858ce33b795,
-    .version = "0.5.1",
+    .version = "0.6.0",
     .minimum_zig_version = "0.17.1",
     .dependencies = .{
         .md = .{
@@ -13,8 +13,8 @@
             .hash = "gtroff-0.5.0-7kuxtRf1AgC6Gk4hT4KOxt8WBrwgJreCd-968RofZu1N",
         },
         .regex = .{
-            .url = "https://github.com/BearzRobotics/regex-zig/archive/refs/tags/v0.3.0.tar.gz",
-            .hash = "regex-0.3.0-bWvIn7D8CgBvfUhlJMp4nIRpRPYTsf6XVlcsRyHxS8bu",
+            .url = "https://github.com/BearzRobotics/regex-zig/archive/refs/tags/v0.4.0.tar.gz",
+            .hash = "regex-0.4.0-bWvIn34rCwAWT160q4wuvE32kzckrdr_dbxLiYlApZvk",
         },
     },
     .paths = .{ "build.zig", "build.zig.zon", "src", "ai", "docs", "tools", "completions", "test", "LICENSE", "README.md" },

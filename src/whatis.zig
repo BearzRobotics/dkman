@@ -1,7 +1,7 @@
 //! One-line descriptions of pages (the NAME section), for `-f` (whatis) and
 //! `-k` (apropos), and a cache of them so that listing is quick.
 //!
-//! The index is a text file: a first line `dkman-whatis 2 FINGERPRINT`, then
+//! The index is a text file: a first line `dkman-whatis 3 FINGERPRINT`, then
 //! one line `name TAB section TAB path TAB keys TAB description` per page. As
 //! in man-db, a page is listed under its file's name; the names its NAME line
 //! declares are further keys a search can find it by (not for a page that is
@@ -106,6 +106,108 @@ pub fn nameSection(arena: Allocator, text: []const u8) Allocator.Error!?[]const 
     }
     if (out.items.len == 0) return null;
     return out.items;
+}
+
+/// Removes the Markdown that would clutter a one-line description: emphasis
+/// markers, backticks, and links keep only their text.
+fn plainText(arena: Allocator, text: []const u8) Allocator.Error![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < text.len) : (i += 1) {
+        const c = text[i];
+        if (c == '*' or c == '`' or c == '\\') continue;
+        if (c == '[') {
+            // [text](url): keep the text.
+            if (std.mem.findScalarPos(u8, text, i, ']')) |close| {
+                if (close + 1 < text.len and text[close + 1] == '(') {
+                    if (std.mem.findScalarPos(u8, text, close, ')')) |end| {
+                        try out.appendSlice(arena, text[i + 1 .. close]);
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+        }
+        try out.append(arena, if (c == '\n' or c == '\r' or c == '\t') ' ' else c);
+    }
+    return std.mem.trim(u8, out.items, " ");
+}
+
+/// The first sentence of a paragraph, as one line.
+fn firstSentence(arena: Allocator, paragraph: []const u8) Allocator.Error![]const u8 {
+    const plain = try plainText(arena, paragraph);
+    var end = plain.len;
+    var from: usize = 0;
+    while (std.mem.findPos(u8, plain, from, ". ")) |dot| {
+        // Not an abbreviation such as `e.g. ` or `i.e. `.
+        if (dot >= 2 and plain[dot - 2] == '.') {
+            from = dot + 2;
+            continue;
+        }
+        end = dot + 1;
+        break;
+    }
+    return charPrefix(plain[0..end], 200);
+}
+
+/// A short description for a Markdown page without a NAME section (the
+/// documentation sets from `--fetch-docs`): the paragraph under a SYNOPSIS
+/// heading, else the `description:` of the front matter, else the page's
+/// first paragraph.
+pub fn docSummary(arena: Allocator, markdown: []const u8) Allocator.Error!?[]const u8 {
+    var body = markdown;
+    var front: ?[]const u8 = null;
+    if (std.mem.startsWith(u8, markdown, "---")) {
+        front = @import("docsets.zig").frontMatterValue(markdown, "description");
+        // Skip the front matter block.
+        var pos: usize = 0;
+        var fences: usize = 0;
+        while (pos < markdown.len) {
+            const end = std.mem.findScalarPos(u8, markdown, pos, '\n') orelse markdown.len;
+            const line = std.mem.trim(u8, markdown[pos..end], " \t\r");
+            pos = end + 1;
+            if (std.mem.eql(u8, line, "---") or std.mem.eql(u8, line, "...")) {
+                fences += 1;
+                if (fences == 2) break;
+            }
+        }
+        body = if (pos <= markdown.len) markdown[pos..] else "";
+    }
+    // Paragraphs: the text between blank lines, headings starting new ones.
+    var after_synopsis = false;
+    var first: ?[]const u8 = null;
+    var para: std.ArrayList(u8) = .empty;
+    var in_code = false;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (true) {
+        const raw = lines.next();
+        const line = if (raw) |r| std.mem.trim(u8, r, " \t\r") else "";
+        if (raw != null and std.mem.startsWith(u8, line, "```")) {
+            in_code = !in_code;
+            continue;
+        }
+        const ends = raw == null or (!in_code and (line.len == 0 or line[0] == '#'));
+        if (ends and para.items.len > 0) {
+            if (after_synopsis) return try firstSentence(arena, para.items);
+            if (first == null) first = try arena.dupe(u8, para.items);
+            para.clearRetainingCapacity();
+        }
+        if (raw == null) break;
+        if (in_code or line.len == 0) continue;
+        if (line[0] == '#') {
+            var h = std.mem.trimStart(u8, line, "# ");
+            h = std.mem.trimEnd(u8, h, " #");
+            after_synopsis = std.ascii.eqlIgnoreCase(h, "SYNOPSIS");
+            continue;
+        }
+        // Not prose: tables, HTML, images, quotes, notes, lists.
+        if (line[0] == '|' or line[0] == '<' or line[0] == '!' or line[0] == '>' or line[0] == '-' or line[0] == '*' or line[0] == '[' and std.mem.startsWith(u8, line, "[!")) continue;
+        if (para.items.len > 0) try para.append(arena, ' ');
+        try para.appendSlice(arena, line);
+    }
+    if (front) |f| return try firstSentence(arena, f);
+    if (first) |f| return try firstSentence(arena, f);
+    return null;
 }
 
 /// Roff source up to (not including) the second section heading: the
@@ -221,6 +323,10 @@ pub fn build(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8)
                     }
                 } else |_| {}
             }
+            // Documentation sets have no NAME section: summarize the text.
+            if (parsed.description.len == 0 and loaded.format == .markdown) {
+                if (try docSummary(scratch, loaded.bytes)) |d| parsed.description = d;
+            }
         } else |_| {}
         // Listed under the file's name, as in man-db; the names the NAME line
         // declares are further keys to find it by.
@@ -269,7 +375,7 @@ fn entryLess(_: void, a: Entry, b: Entry) bool {
 
 fn serialize(arena: Allocator, entries: []const Entry, print: u64) Allocator.Error![]u8 {
     var out: std.ArrayList(u8) = .empty;
-    try out.print(arena, "dkman-whatis 2 {x}\n", .{print});
+    try out.print(arena, "dkman-whatis 3 {x}\n", .{print});
     for (entries) |e| {
         try out.print(arena, "{s}\t{s}\t{s}\t{s}\t{s}\n", .{ e.name, e.section, e.path, e.keys, e.description });
     }
@@ -283,7 +389,7 @@ pub fn parseIndex(arena: Allocator, text: []const u8, print: u64) Allocator.Erro
     const first = lines.next() orelse return null;
     var words = std.mem.splitScalar(u8, first, ' ');
     if (!std.mem.eql(u8, words.next() orelse "", "dkman-whatis")) return null;
-    if (!std.mem.eql(u8, words.next() orelse "", "2")) return null;
+    if (!std.mem.eql(u8, words.next() orelse "", "3")) return null;
     const got = std.fmt.parseInt(u64, words.next() orelse "", 16) catch return null;
     if (got != print) return null;
     var out: std.ArrayList(Entry) = .empty;
@@ -681,4 +787,18 @@ test "no-break spaces in NAME become spaces" {
     defer arena_state.deinit();
     const a = arena_state.allocator();
     try std.testing.expectEqualStrings("a - ISO/IEC 8859-9 set", (try nameSection(a, "NAME\n  a - ISO/IEC\u{a0}8859-9 set\n")).?);
+}
+
+test "docSummary prefers SYNOPSIS, then the front matter, then the first paragraph" {
+    const t = std.testing;
+    var arena_state = std.heap.ArenaAllocator.init(t.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const cmdlet = "---\nmodule: x\n---\n# Get-Thing\n\n## SYNOPSIS\n\nGets the **things** in a [place](a.md). More text.\n\n## SYNTAX\n\n```\nGet-Thing\n```\n";
+    try t.expectEqualStrings("Gets the things in a place.", (try docSummary(a, cmdlet)).?);
+    const tool = "---\ntitle: PsExec\ndescription: Execute processes on remote systems.\n---\n\n# PsExec v2.44\n\n**By Mark**\n";
+    try t.expectEqualStrings("Execute processes on remote systems.", (try docSummary(a, tool)).?);
+    const plain = "# dir\n\nDisplays a list of a directory's files, e.g. text. It also shows sizes.\n\n## Syntax\n";
+    try t.expectEqualStrings("Displays a list of a directory's files, e.g. text.", (try docSummary(a, plain)).?);
+    try t.expect((try docSummary(a, "# only a title\n")) == null);
 }

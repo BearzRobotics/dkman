@@ -12,10 +12,9 @@
 //!     Esc, Ctrl-C   leave
 
 const std = @import("std");
-const builtin = @import("builtin");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
-const posix = std.posix;
+const console = @import("console.zig");
 const paths = @import("paths.zig");
 const page_mod = @import("page.zig");
 const render = @import("render.zig");
@@ -170,51 +169,10 @@ fn appendClipped(gpa: Allocator, out: *std.ArrayList(u8), s: []const u8, max: us
 
 // ----------------------------------------------------------------- terminal
 
-pub const Size = struct { rows: usize, cols: usize };
-
-pub fn terminalSize() Size {
-    var ws: posix.winsize = undefined;
-    const ok = switch (builtin.os.tag) {
-        .linux => std.os.linux.errno(std.os.linux.ioctl(1, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws))) == .SUCCESS,
-        // The BSDs and macOS always have libc, whose ioctl takes the request.
-        .macos, .freebsd, .netbsd, .openbsd, .dragonfly => std.c.ioctl(1, std.c.T.IOCGWINSZ, @intFromPtr(&ws)) == 0,
-        else => false,
-    };
-    if (ok and ws.col > 0 and ws.row > 0) return .{ .rows = ws.row, .cols = ws.col };
-    return .{ .rows = 24, .cols = 80 };
-}
-
-fn inputPending(timeout_ms: i32) bool {
-    var fds = [_]posix.pollfd{.{ .fd = 0, .events = posix.POLL.IN }};
-    const n = posix.poll(&fds, timeout_ms) catch return false;
-    return n > 0;
-}
-
-const RawMode = struct {
-    saved: posix.termios,
-
-    fn enter() !RawMode {
-        const saved = posix.tcgetattr(0) catch return error.NotATerminal;
-        var raw = saved;
-        raw.iflag.ICRNL = false;
-        raw.iflag.IXON = false;
-        raw.iflag.BRKINT = false;
-        raw.iflag.INPCK = false;
-        raw.iflag.ISTRIP = false;
-        raw.lflag.ECHO = false;
-        raw.lflag.ICANON = false;
-        raw.lflag.ISIG = false;
-        raw.lflag.IEXTEN = false;
-        raw.cc[@backingInt(std.os.linux.V.MIN)] = 1;
-        raw.cc[@backingInt(std.os.linux.V.TIME)] = 0;
-        try posix.tcsetattr(0, .FLUSH, raw);
-        return .{ .saved = saved };
-    }
-
-    fn leave(r: RawMode) void {
-        posix.tcsetattr(0, .FLUSH, r.saved) catch {};
-    }
-};
+pub const Size = console.Size;
+pub const terminalSize = console.terminalSize;
+const inputPending = console.inputPending;
+const RawMode = console.RawMode;
 
 // -------------------------------------------------------------------- state
 
@@ -591,7 +549,7 @@ const Tui = struct {
 pub fn run(gpa: Allocator, io: Io, dirs: []const []const u8, pages: []const paths.Page, opts: Options) !?Result {
     const stdin_tty = Io.File.stdin().isTty(io) catch false;
     const stdout_tty = Io.File.stdout().isTty(io) catch false;
-    if (!stdin_tty or !stdout_tty or builtin.os.tag == .windows) return error.NotATerminal;
+    if (!stdin_tty or !stdout_tty) return error.NotATerminal;
 
     var hay = try gpa.alloc([]u8, pages.len);
     var made: usize = 0;
@@ -657,7 +615,7 @@ pub fn run(gpa: Allocator, io: Io, dirs: []const []const u8, pages: []const path
             continue;
         }
         var buf: [256]u8 = undefined;
-        const n = posix.read(0, &buf) catch return null;
+        const n = console.readInput(&buf) catch return null;
         if (n == 0) return null;
         action = try t.handle(buf[0..n]);
         dirty = true;

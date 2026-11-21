@@ -27,6 +27,23 @@ Install (the program, its manual page as man(7) generated from `docs/manpages/dk
 The page index for `-f` and `-k` is built on first use (about a second) and cached
 in `~/.cache/dkman/`. Page names in the completions come from it.
 
+## Windows, PowerShell and other offline docs
+
+dkman runs on Windows (`zig build -Dtarget=x86_64-windows`, or a release build) and
+can download Microsoft's documentation, which is Markdown on GitHub, for offline use:
+
+    dkman --list-docs                       # what is available, sizes, topics, versions
+    dkman --fetch-docs powershell-5.1 cmd sysinternals
+    dkman --fetch-docs all                  # everything (large: see --list-docs)
+    dkman ps Get-ChildItem                  # a cmdlet; dkman cmd robocopy; dkman -k firewall
+    dkman --set 5.1 -k firewall             # search one version only
+    dkman --docs-dir E:\docs --fetch-docs all   # keep the docs on a USB drive (or set DKMAN_DOCS=E:\docs)
+
+Sets: PowerShell 5.1 and 7.x (cmdlets, about topics, guides), DSC, PSResourceGet, Windows Server
+modules and guides (AD DS, AD FS, DNS, Hyper-V, storage ...), the Windows commands, Exchange,
+Teams, SharePoint, Sysinternals, WSL and the Win32 API. Man pages of Git for Windows, MSYS2,
+Cygwin, Scoop and rustup are found without configuration. See `docs/decisions/0003-windows-and-docs.md`.
+
 See `docs/manpages/dkman.1.md` for the options, `docs/architecture.md` for the
 layout and `docs/decisions/` for the reasoning. Zig 0.17.1. `test/tools/cli.sh` checks the command line. Dependencies (md-zig, gtroff-zig, regex-zig) are fetched
 by `zig build` from their GitHub releases. License: MIT.

@@ -48,7 +48,8 @@ pub fn build(b: *std.Build) void {
     // are copies; a package may make them symbolic links to dkman.
     if (b.option(bool, "install-as-man", "Also install man, whatis, apropos, manpath and mandb") orelse false) {
         for ([_][]const u8{ "man", "whatis", "apropos", "manpath", "mandb" }) |name| {
-            b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_sub_path = name }).step);
+            const dest = b.fmt("{s}{s}", .{ name, target.result.exeFileExt() });
+            b.getInstallStep().dependOn(&b.addInstallArtifact(exe, .{ .dest_sub_path = dest }).step);
         }
     }
 

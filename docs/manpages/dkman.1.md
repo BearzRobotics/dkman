@@ -119,6 +119,30 @@ and a leading section operand (`dkman 3 printf`) select a section.
   not a terminal or `NO_COLOR` is set to a non-empty value. Without color the
   text is plain, as with man(1).
 
+`--set` LIST
+: Look only in the downloaded documentation sets LIST names (comma separated; see
+  DOCUMENTATION SETS). Each name is a set id (`powershell-5.1`), the start of
+  one before a dash (`powershell`, `winps`), a topic (`Windows Server`) or a
+  version (`5.1`, `2022`). The man directories are not searched. With `-k`,
+  `-f` and `-b` it narrows the listing the same way.
+
+`--docs-dir` DIR
+: Keep and search the downloaded documentation in DIR instead of the per-user
+  directory (also set by the `DKMAN_DOCS` environment variable). For a toolkit
+  carried on a USB drive: `dkman --docs-dir E:\\docs --fetch-docs all` once,
+  then `set DKMAN_DOCS=E:\\docs` (or the option) on any machine. The page
+  index is then kept in `DIR/.cache`, so it travels with the documentation and
+  the host machine is not written to. DIR is used by `--fetch-docs`,
+  `--list-docs`, `--set` and every search.
+
+`--list-docs`
+: List the documentation sets that can be downloaded, with their topic, version,
+  download size and whether they are installed.
+
+`--fetch-docs` SET...
+: Download documentation sets (see DOCUMENTATION SETS). A SET is selected as
+  for `--set`; `all` takes every set.
+
 `--no-pager`
 : Write to standard output. The pager is only used on a terminal.
 
@@ -138,6 +162,72 @@ A name containing a slash is taken as a path. Short options can be combined
 (`-aw`) and take their value attached or as the next word (`-s3`, `-s 3`). `--`
 ends the options.
 
+# DOCUMENTATION SETS
+
+Microsoft publishes its documentation as Markdown in public GitHub
+repositories (github.com/MicrosoftDocs). `dkman --fetch-docs` downloads the
+archive of a repository, keeps only the pages a set wants and stores them as
+ordinary manual directories, so every mode of dkman (`-k`, `-f`, `-b`, `-w`,
+`--set`) works on them without being online. Nothing is installed by default:
+Windows ships almost no offline help. No other program (git, curl, PowerShell)
+is needed, and sets of one repository share one download. The download is of
+the whole repository, from a few megabytes to about a gigabyte
+(`--list-docs` shows each); a failed download leaves the old copy in place.
+
+Pages are in sections: `ps` (cmdlets and about topics), `cmd` (Windows
+commands), `ws` (Windows Server guides), `psguide` (PowerShell guides), `sys`
+(Sysinternals), `wsl`, `win32` (API functions, structures, enumerations: the sdk-api
+repository) and `winguide` (Win32 and COM guides).
+The section may come first, as with numbers: `dkman ps Get-ChildItem`,
+`dkman cmd robocopy`, `dkman -s ps -k firewall`. Guides are named by their
+folders (`identity-ad-ds-...`), found with `-k`.
+
+The sets, by topic:
+
+PowerShell
+: `powershell-5.1`, `-7.4`, `-7.5`, `-7.6`, `-7.7` (cmdlets and about
+  topics), `powershell-guide`, `psmodules` (PSScriptAnalyzer,
+  SecretManagement, PlatyPS, Crescendo), `dsc-1.1`, `-2.0`, `-3.0`,
+  `psget-2.x`, `psget-3.x`, `psget-guide`.
+
+Windows Server
+: `winps-2016`, `-2019`, `-2022`, `-2025` (the Windows modules: Hyper-V,
+  ActiveDirectory, DnsServer, NetAdapter ...), `cmd`, `winserver` (AD DS, AD FS,
+  DNS, Hyper-V, remote access, Admin Center, storage, performance tuning ...).
+
+Microsoft 365
+: `exchange`, `teams`, `skype`, `office-misc`, `sharepoint-online`; also
+  `sharepoint-server`.
+
+Others
+: `sysinternals`, `wsl`, `win32` (API reference), `win32-guide`.
+
+Search by version with `--set`: `dkman --set 5.1 -k firewall` looks only in
+Windows PowerShell 5.1's documentation, `--set winps-2022` in Windows Server
+2022's modules, `--set "Windows Server"` in everything about the server.
+
+# WINDOWS
+
+dkman runs on Windows (a console with ANSI support: Windows Terminal, or
+conhost of Windows 10 and later). Differences from other systems:
+
+- Path lists (`MANPATH`, `-M`, `PATH`) are separated by `;`.
+- The manual directories used without `MANPATH` are those implied by `PATH`
+  (a `bin` directory implies the `man` and `share\man` beside it) plus, when
+  they exist, the man trees of Git for Windows (`Git\usr\share\man`,
+  `Git\mingw64\share\man`), MSYS2 and Cygwin (`C:\msys64`, `C:\cygwin64`),
+  Scoop apps (`%USERPROFILE%\scoop\apps\*\current`), rustup toolchains and the
+  downloaded documentation sets.
+- The default pager is `less` (Git for Windows and Scoop provide it); if it is
+  not installed, `more.com`, then plain output.
+- Output is UTF-8 on a console (dkman sets the code page) and ASCII when
+  redirected, unless `--ascii` or the locale says otherwise.
+- The page index is cached in `%ProgramData%\dkman\cache` (written by
+  `mandb` run as administrator) and `%LOCALAPPDATA%\dkman\cache`; downloaded
+  documentation lives in `%LOCALAPPDATA%\dkman\docs`; `%ProgramData%\dkman\manpath.config` is
+  read like `/etc/manpath.config`.
+- A page argument with a backslash or a drive letter is a path.
+
 # COMPANION COMMANDS
 
 Started as `man`, `whatis`, `apropos`, `manpath` or `mandb`, dkman acts as the
@@ -156,7 +246,7 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
 # ENVIRONMENT
 
 `MANPATH`
-: Colon separated manual directories. An empty entry stands for the directories
+: Manual directories, separated by colons (semicolons on Windows). An empty entry stands for the directories
   below. If it is not set, they are found as man-db does: every directory of
   `PATH` implies one (through `MANPATH_MAP` in `/etc/manpath.config`, or
   `.../bin` giving `.../man` and `.../share/man`), then the `MANDATORY_MANPATH`
@@ -176,6 +266,14 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
 
 `LC_ALL`, `LC_MESSAGES`, `LC_CTYPE`, `LANG`
 : Language of the pages and character set of the output.
+
+`DKMAN_DOCS`
+: The directory of downloaded documentation (see `--docs-dir`).
+
+`XDG_DATA_HOME`, `LOCALAPPDATA`, `ProgramData`
+: Where downloaded documentation (`$XDG_DATA_HOME/dkman/docs`,
+  `~/.local/share/dkman/docs`, `%LOCALAPPDATA%\dkman\docs`) and, on Windows, the
+  caches and configuration file are kept.
 
 `XDG_CACHE_HOME`, `HOME`
 : The page descriptions are cached in `$XDG_CACHE_HOME/dkman/` or
@@ -225,5 +323,10 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
   differing mostly where the two databases were built from different files).
 - `-b` needs a terminal 70 columns wide or more to show the preview.
 - Built and tested on Linux. It compiles for macOS and the BSDs (the terminal
-  size and raw mode use the same POSIX calls), but has not been run there.
+  size and raw mode use the same POSIX calls), but has not been run there. The
+  Windows build is tested under Wine; the console functions (ANSI and UTF-8
+  setup, window size, the `-b` browser's raw input) have not been run on a real
+  console.
+- Downloaded documentation is Markdown meant for a web page: HTML fragments in
+  tables and Learn-specific syntax (`> [!NOTE]`, tabs) show as written.
 - Output encoding is UTF-8 or ASCII only (`-E` is ignored).

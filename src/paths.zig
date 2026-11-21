@@ -7,10 +7,12 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 const format = @import("format.zig");
+const platform = @import("platform.zig");
 
 /// Where pages are looked for when `MANPATH` is not set.
-pub const default_dirs = [_][]const u8{
+pub const default_dirs = if (builtin.os.tag == .windows) [_][]const u8{} else [_][]const u8{
     "/usr/local/man",
     "/usr/local/share/man",
     "/usr/share/man",
@@ -32,13 +34,13 @@ pub const Page = struct {
     dir_index: usize,
 };
 
-/// The manual directories to search: `MANPATH` (colon separated, empty entries
+/// The manual directories to search: `MANPATH` (colon separated, semicolon on Windows, empty entries
 /// mean "the usual ones", `usual`) or, when it is not set, `usual`. Slices are
 /// borrowed from `manpath` and `usual`.
 pub fn searchDirs(arena: Allocator, manpath: ?[]const u8, usual: []const []const u8) Allocator.Error![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     if (manpath) |mp| {
-        var it = std.mem.splitScalar(u8, mp, ':');
+        var it = std.mem.splitScalar(u8, mp, platform.list_separator);
         while (it.next()) |part| {
             if (part.len == 0) {
                 try out.appendSlice(arena, usual);
@@ -235,9 +237,23 @@ fn dirExists(io: Io, path: []const u8) bool {
     return true;
 }
 
+fn isSeparator(c: u8) bool {
+    return c == '/' or (builtin.os.tag == .windows and c == '\\');
+}
+
+/// `dir` without a trailing `/bin` or `/sbin` (either separator on Windows).
+fn withoutBinDir(dir: []const u8) ?[]const u8 {
+    inline for (.{ "bin", "sbin" }) |leaf| {
+        if (dir.len > leaf.len + 1 and isSeparator(dir[dir.len - leaf.len - 1]) and (if (builtin.os.tag == .windows) std.ascii.eqlIgnoreCase(dir[dir.len - leaf.len ..], leaf) else std.mem.eql(u8, dir[dir.len - leaf.len ..], leaf))) {
+            return dir[0 .. dir.len - leaf.len - 1];
+        }
+    }
+    return null;
+}
+
 fn addUnique(arena: Allocator, list: *std.ArrayList([]const u8), dir: []const u8) Allocator.Error!void {
     var d = dir;
-    while (d.len > 1 and d[d.len - 1] == '/') d = d[0 .. d.len - 1];
+    while (d.len > 1 and isSeparator(d[d.len - 1])) d = d[0 .. d.len - 1];
     for (list.items) |have| if (std.mem.eql(u8, have, d)) return;
     try list.append(arena, d);
 }
@@ -250,11 +266,11 @@ fn addUnique(arena: Allocator, list: *std.ArrayList([]const u8), dir: []const u8
 pub fn deriveManpath(arena: Allocator, io: Io, path_env: ?[]const u8, conf: Conf) Allocator.Error![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     if (path_env) |pe| {
-        var it = std.mem.splitScalar(u8, pe, ':');
+        var it = std.mem.splitScalar(u8, pe, platform.list_separator);
         while (it.next()) |entry_raw| {
             var entry = entry_raw;
-            if (entry.len == 0 or entry[0] != '/') continue;
-            while (entry.len > 1 and entry[entry.len - 1] == '/') entry = entry[0 .. entry.len - 1];
+            if (entry.len == 0 or !std.fs.path.isAbsolute(entry)) continue;
+            while (entry.len > 1 and isSeparator(entry[entry.len - 1])) entry = entry[0 .. entry.len - 1];
             var mapped = false;
             for (conf.maps) |m| {
                 if (std.mem.eql(u8, m.from, entry)) {
@@ -263,7 +279,7 @@ pub fn deriveManpath(arena: Allocator, io: Io, path_env: ?[]const u8, conf: Conf
                 }
             }
             if (mapped) continue;
-            const base = if (std.mem.endsWith(u8, entry, "/bin")) entry[0 .. entry.len - 4] else if (std.mem.endsWith(u8, entry, "/sbin")) entry[0 .. entry.len - 5] else continue;
+            const base = withoutBinDir(entry) orelse continue;
             for ([_][]const u8{ "man", "share/man" }) |sub| {
                 const cand = try std.fs.path.join(arena, &.{ base, sub });
                 if (dirExists(io, cand)) try addUnique(arena, &out, cand);
@@ -340,7 +356,7 @@ pub fn soTarget(content: []const u8) ?[]const u8 {
 /// directory (`man1/systemd.1`); compression suffixes are tried too. Paths that climb out of
 /// the directory (`..`) or are absolute are refused.
 pub fn resolveSo(arena: Allocator, io: Io, dirs: []const []const u8, target: []const u8) Allocator.Error!?[]const u8 {
-    if (target.len == 0 or target[0] == '/' or std.mem.find(u8, target, "..") != null) return null;
+    if (target.len == 0 or std.fs.path.isAbsolute(target) or std.mem.find(u8, target, "..") != null) return null;
     for (dirs) |d| {
         for ([_][]const u8{ "", ".gz", ".xz", ".zst", ".bz2", ".lzma" }) |suffix| {
             const path = try std.fmt.allocPrint(arena, "{s}/{s}{s}", .{ d, target, suffix });

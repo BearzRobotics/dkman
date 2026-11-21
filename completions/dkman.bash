@@ -16,7 +16,7 @@ _dkman() {
             --local-file --where --path --whatis --apropos --global-apropos
             --browse --all --match-case --ignore-case --extension --html --regex --wildcard --exact
             --sections --manpath --locale --pager --width
-            --ascii --color --no-color --no-pager --update-index --version
+            --ascii --color --no-color --no-pager --update-index --list-docs --fetch-docs --set --docs-dir --version
             --help" -- "$cur"))
         return
     fi

@@ -3,6 +3,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const platform = @import("platform.zig");
 
 /// Splits a pager command such as `less -R` into words. There is no shell: no
 /// quoting, no expansion. Slices are borrowed from `command`.
@@ -41,7 +42,13 @@ pub fn show(gpa: Allocator, io: Io, command: []const u8, text: []const u8) !void
     if (argv.len == 0) return writeStdout(io, text);
     const run = try withColors(arena_state.allocator(), argv);
 
-    var child = std.process.spawn(io, .{ .argv = run, .stdin = .pipe }) catch return writeStdout(io, text);
+    // A pager that is not installed (no `less` on Windows) gives way to the
+    // system's own, then to plain output.
+    var child = std.process.spawn(io, .{ .argv = run, .stdin = .pipe }) catch blk: {
+        const fallback = platform.fallback_pager orelse return writeStdout(io, text);
+        if (std.mem.eql(u8, std.fs.path.basename(run[0]), fallback)) return writeStdout(io, text);
+        break :blk std.process.spawn(io, .{ .argv = &.{fallback}, .stdin = .pipe }) catch return writeStdout(io, text);
+    };
     var stdin = child.stdin.?;
     child.stdin = null;
     // A pager the user quits early closes the pipe; that is not an error.
