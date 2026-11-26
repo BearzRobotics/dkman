@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Reading a page file into memory, undoing gzip, xz, zstd, bzip2 and lzma.
 //! All of them are decoded in process: no external program is run.
 

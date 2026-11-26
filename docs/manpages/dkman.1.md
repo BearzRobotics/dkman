@@ -102,7 +102,8 @@ and a leading section operand (`dkman 3 printf`) select a section.
   then `DIR`). Default: the first of `LC_ALL`, `LC_MESSAGES`, `LANG`.
 
 `-P`, `--pager COMMAND`
-: Pager command. Default: `MANPAGER`, `PAGER`, then `less`.
+: Pager command. Default: `MANPAGER`, `PAGER`, then the built-in pager
+  (see **PAGER**). An empty command means no pager.
 
 `--width N`
 : Wrap at N columns. Default: `MANWIDTH`, `COLUMNS`, the terminal's width, 80.
@@ -232,8 +233,8 @@ conhost of Windows 10 and later). Differences from other systems:
   `Git\mingw64\share\man`), MSYS2 and Cygwin (`C:\msys64`, `C:\cygwin64`),
   Scoop apps (`%USERPROFILE%\scoop\apps\*\current`), rustup toolchains and the
   downloaded documentation sets.
-- The default pager is `less` (Git for Windows and Scoop provide it); if it is
-  not installed, `more.com`, then plain output.
+- The built-in pager is the default, so nothing needs installing. `more.com`
+  is not used on its own: it garbles or drops UTF-8 text.
 - Output is UTF-8 on a console (dkman sets the code page) and ASCII when
   redirected, unless `--ascii` or the locale says otherwise.
 - The page index is cached in `%ProgramData%\dkman\cache` (written by
@@ -241,6 +242,22 @@ conhost of Windows 10 and later). Differences from other systems:
   documentation lives in `%LOCALAPPDATA%\dkman\docs`; `%ProgramData%\dkman\manpath.config` is
   read like `/etc/manpath.config`.
 - A page argument with a backslash or a drive letter is a path.
+
+# PAGER
+
+Unless a pager is configured, pages are shown by the built-in pager, the
+`less` of util-core, on every system. It needs a terminal that takes ANSI
+styles; otherwise the text is written to standard output.
+
+- `Space`, `f` or Page Down: a page down; `b` or Page Up: a page up.
+- `d` and `u`: half a page. `j`, `Enter` or Down, and `k` or Up: one line.
+- `g` or Home: the top; `G` or End: the bottom.
+- `/` and `?` search forward and backward, `n` and `N` repeat. A pattern in
+  lower case ignores case.
+- `=` shows the position, `h` the keys. `q` or `Ctrl-C` quits.
+
+The search is for plain text, not a regular expression. For another pager,
+use `-P`, `MANPAGER` or `PAGER` (for example `-P less`).
 
 # COMPANION COMMANDS
 
@@ -272,8 +289,8 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
 
 `MANPAGER`, `PAGER`
 : Pager command, split at blanks, no shell. A `less` without an option that
-  passes colors through gets `-R`. If the pager cannot be started the text is
-  written to standard output.
+  passes colors through gets `-R`. If the pager cannot be started, the
+  built-in pager is used.
 
 `MANWIDTH`, `COLUMNS`, `NO_COLOR`
 : See `--width` and `--color`.

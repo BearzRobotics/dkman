@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Where things live on this system: the separator of path lists, the manual
 //! directories of tools commonly installed on Windows (Git for Windows, MSYS2,
 //! Cygwin, Scoop, rustup), dkman's own data directory and the documentation
@@ -132,7 +133,10 @@ pub fn cacheDirs(arena: Allocator, env: *const Env) Allocator.Error![]const []co
 pub fn configFiles(arena: Allocator, env: *const Env) Allocator.Error![]const []const u8 {
     if (is_windows) {
         const d = nonEmpty(env.get("ProgramData")) orelse return &.{};
-        return &.{try std.fs.path.join(arena, &.{ d, "dkman", "manpath.config" })};
+        // The list too must be in the arena: `&.{path}` would point into this
+        // function's stack frame.
+        const file = try std.fs.path.join(arena, &.{ d, "dkman", "manpath.config" });
+        return arena.dupe([]const u8, &.{file});
     }
     return &.{ "/etc/manpath.config", "/etc/man_db.conf" };
 }
@@ -199,11 +203,6 @@ pub fn docDirs(arena: Allocator, io: Io, env: *const Env, override: ?[]const u8)
     std.mem.sort([]const u8, out.items, {}, lessThanStr);
     return out.items;
 }
-
-/// The pager used when none is configured, and the one tried when it cannot
-/// be started.
-pub const default_pager = "less";
-pub const fallback_pager: ?[]const u8 = if (is_windows) "more.com" else null;
 
 test "windowsManDirs finds Git, Scoop and rustup trees that exist" {
     const t = std.testing;

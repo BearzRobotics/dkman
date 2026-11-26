@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Build-time tool: turns a dkman manual page written in Markdown into man(7)
 //! source, so the installed `dkman.1` can be read by any man program.
 //!

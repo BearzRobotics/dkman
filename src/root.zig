@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! dkman as a library: finding manual pages and Markdown documents, reading
 //! them (gzip, xz, zstd, bzip2 and lzma aware), detecting their format and turning them into an
 //! `md.Document` or terminal text. The `dkman` program is a thin wrapper.

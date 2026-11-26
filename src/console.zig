@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! The terminal, for the parts that differ between systems: its size, making
 //! it understand ANSI styles and UTF-8, and reading keys one at a time (the
 //! browser, `-b`). POSIX systems use termios and poll; Windows uses the
@@ -7,6 +8,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const posix = std.posix;
+const Io = std.Io;
 
 pub const Size = struct { rows: usize, cols: usize };
 
@@ -67,6 +69,9 @@ const win = if (is_windows) struct {
     const key_event: u16 = 0x0001;
     extern "kernel32" fn ReadFile(h: HANDLE, buf: [*]u8, len: u32, read: *u32, overlapped: ?*anyopaque) callconv(.winapi) i32;
 
+    extern "kernel32" fn CreateFileW(name: [*:0]const u16, access: u32, share: u32, security: ?*anyopaque, disposition: u32, flags: u32, template: ?HANDLE) callconv(.winapi) HANDLE;
+    extern "kernel32" fn CloseHandle(h: HANDLE) callconv(.winapi) i32;
+
     fn handle(which: u32) ?HANDLE {
         const h = GetStdHandle(which) orelse return null;
         if (h == std.os.windows.INVALID_HANDLE_VALUE) return null;
@@ -95,6 +100,37 @@ pub fn outputIsUtf8Console() bool {
     const out = win.handle(win.std_output) orelse return false;
     var mode: u32 = 0;
     return win.GetConsoleMode(out, &mode) != 0;
+}
+
+// ---------------------------------------------------------------- streams
+
+/// Standard input, output and error. Use these, not `Io.File.stdin()` and
+/// friends: Windows can hand a program asynchronous pipes (its SSH server
+/// does), and std takes the three to be synchronous. A read or write that then
+/// has to wait ends in `unreachable`.
+pub fn stdin() Io.File {
+    return asOpened(Io.File.stdin());
+}
+
+pub fn stdout() Io.File {
+    return asOpened(Io.File.stdout());
+}
+
+pub fn stderr() Io.File {
+    return asOpened(Io.File.stderr());
+}
+
+/// `file` with its `nonblocking` flag matching how the handle was opened.
+fn asOpened(file: Io.File) Io.File {
+    if (!is_windows) return file;
+    const w = std.os.windows;
+    var iosb: w.IO_STATUS_BLOCK = undefined;
+    var mode: w.FILE.MODE = undefined;
+    // This fails for a console handle, which is synchronous.
+    const status = w.ntdll.NtQueryInformationFile(file.handle, &iosb, &mode, @sizeOf(w.FILE.MODE), .Mode);
+    var result = file;
+    if (status == .SUCCESS and mode.IO == .ASYNCHRONOUS) result.flags.nonblocking = true;
+    return result;
 }
 
 // --------------------------------------------------------------------- size
@@ -126,8 +162,19 @@ pub fn terminalSize() Size {
 
 /// True when a key can be read within `timeout_ms` (0: right now).
 pub fn inputPending(timeout_ms: i32) bool {
+    return pendingOn(standardInput() orelse return false, timeout_ms);
+}
+
+/// What keys are read from: a handle on Windows, a descriptor elsewhere.
+const Input = Io.File.Handle;
+
+fn standardInput() ?Input {
+    if (is_windows) return win.handle(win.std_input);
+    return 0;
+}
+
+fn pendingOn(in: Input, timeout_ms: i32) bool {
     if (is_windows) {
-        const in = win.handle(win.std_input) orelse return false;
         // The console's input handle is signalled for any event in its queue,
         // also those ReadFile never returns: a key being released (the Enter
         // that started dkman is the first thing there), a key with no
@@ -151,7 +198,7 @@ pub fn inputPending(timeout_ms: i32) bool {
             if (win.WaitForSingleObject(in, @intCast(deadline - now)) != 0) return false;
         }
     }
-    var fds = [_]posix.pollfd{.{ .fd = 0, .events = posix.POLL.IN }};
+    var fds = [_]posix.pollfd{.{ .fd = in, .events = posix.POLL.IN }};
     const n = posix.poll(&fds, timeout_ms) catch return false;
     return n > 0;
 }
@@ -159,22 +206,29 @@ pub fn inputPending(timeout_ms: i32) bool {
 /// Reads what the user typed, as the bytes a terminal sends (escape sequences
 /// for the arrow keys). Zero bytes means the input ended.
 pub fn readInput(buf: []u8) !usize {
+    return readOn(standardInput() orelse return error.NotATerminal, buf);
+}
+
+fn readOn(in: Input, buf: []u8) !usize {
     if (is_windows) {
-        const in = win.handle(win.std_input) orelse return error.NotATerminal;
         var n: u32 = 0;
         if (win.ReadFile(in, buf.ptr, @intCast(buf.len), &n, null) == 0) return error.ReadFailed;
         return n;
     }
-    return posix.read(0, buf);
+    return posix.read(in, buf);
 }
 
 /// The terminal taking keys one at a time, without echo or line editing.
 pub const RawMode = struct {
+    in: Input,
     saved: if (is_windows) struct { input: u32, output: u32 } else posix.termios,
 
     pub fn enter() !RawMode {
+        return enterOn(standardInput() orelse return error.NotATerminal);
+    }
+
+    fn enterOn(in: Input) !RawMode {
         if (is_windows) {
-            const in = win.handle(win.std_input) orelse return error.NotATerminal;
             const out = win.handle(win.std_output) orelse return error.NotATerminal;
             var in_mode: u32 = 0;
             var out_mode: u32 = 0;
@@ -184,9 +238,9 @@ pub const RawMode = struct {
             if (win.SetConsoleMode(in, raw) == 0) return error.NotATerminal;
             _ = win.SetConsoleCP(win.utf8);
             _ = win.SetConsoleMode(out, out_mode | win.enable_processed_output | win.enable_virtual_terminal_processing);
-            return .{ .saved = .{ .input = in_mode, .output = out_mode } };
+            return .{ .in = in, .saved = .{ .input = in_mode, .output = out_mode } };
         }
-        const saved = posix.tcgetattr(0) catch return error.NotATerminal;
+        const saved = posix.tcgetattr(in) catch return error.NotATerminal;
         var raw = saved;
         raw.iflag.ICRNL = false;
         raw.iflag.IXON = false;
@@ -199,16 +253,68 @@ pub const RawMode = struct {
         raw.lflag.IEXTEN = false;
         raw.cc[@backingInt(std.os.linux.V.MIN)] = 1;
         raw.cc[@backingInt(std.os.linux.V.TIME)] = 0;
-        try posix.tcsetattr(0, .FLUSH, raw);
-        return .{ .saved = saved };
+        try posix.tcsetattr(in, .FLUSH, raw);
+        return .{ .in = in, .saved = saved };
     }
 
     pub fn leave(r: RawMode) void {
         if (is_windows) {
-            if (win.handle(win.std_input)) |in| _ = win.SetConsoleMode(in, r.saved.input);
+            _ = win.SetConsoleMode(r.in, r.saved.input);
             if (win.handle(win.std_output)) |out| _ = win.SetConsoleMode(out, r.saved.output);
             return;
         }
-        posix.tcsetattr(0, .FLUSH, r.saved) catch {};
+        posix.tcsetattr(r.in, .FLUSH, r.saved) catch {};
+    }
+};
+
+/// The keys of the terminal itself, in raw mode. It is opened by name, so it
+/// works while standard input is the page (`zcat x.1.gz | dkman -l -`).
+pub const Keyboard = struct {
+    raw: RawMode,
+
+    /// Null when there is no terminal to read keys from.
+    pub fn open(io: Io) ?Keyboard {
+        const in = openTerminal(io) orelse return null;
+        const raw = RawMode.enterOn(in) catch {
+            closeInput(io, in);
+            return null;
+        };
+        return .{ .raw = raw };
+    }
+
+    /// Restores the terminal.
+    pub fn close(k: Keyboard, io: Io) void {
+        k.raw.leave();
+        closeInput(io, k.raw.in);
+    }
+
+    /// As `inputPending`.
+    pub fn pending(k: Keyboard, timeout_ms: i32) bool {
+        return pendingOn(k.raw.in, timeout_ms);
+    }
+
+    /// As `readInput`.
+    pub fn read(k: Keyboard, buf: []u8) !usize {
+        return readOn(k.raw.in, buf);
+    }
+
+    fn openTerminal(io: Io) ?Input {
+        if (is_windows) {
+            const name = std.unicode.utf8ToUtf16LeStringLiteral("CONIN$");
+            // Read and write access, shared both ways, an existing device.
+            const h = win.CreateFileW(name, 0xc0000000, 3, null, 3, 0, null);
+            return if (h == std.os.windows.INVALID_HANDLE_VALUE) null else h;
+        }
+        const file = Io.Dir.cwd().openFile(io, "/dev/tty", .{ .mode = .read_write }) catch return null;
+        return file.handle;
+    }
+
+    fn closeInput(io: Io, in: Input) void {
+        if (is_windows) {
+            _ = win.CloseHandle(in);
+            return;
+        }
+        const file: Io.File = .{ .handle = in, .flags = .{ .nonblocking = false } };
+        file.close(io);
     }
 };

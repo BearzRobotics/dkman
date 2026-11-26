@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Finding manual pages in the traditional places.
 //!
 //! A manual directory (for example `/usr/share/man`) holds section directories

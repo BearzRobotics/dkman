@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! `dkman --fetch-docs`: downloads documentation repositories from GitHub and
 //! keeps their Markdown pages as manual directories (see `docsets.zig`).
 //!
@@ -12,6 +13,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const flate = std.compress.flate;
 const docsets = @import("docsets.zig");
+const console = @import("console.zig");
 
 /// Largest page kept; the biggest in these repositories is far below this.
 const max_page_bytes: u64 = 8 * 1024 * 1024;
@@ -296,7 +298,7 @@ fn writePage(arena: Allocator, io: Io, dir: []const u8, target: docsets.Target, 
 fn say(io: Io, comptime fmt: []const u8, args: anytype) void {
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch &buf;
-    Io.File.stderr().writeStreamingAll(io, msg) catch {};
+    console.stderr().writeStreamingAll(io, msg) catch {};
 }
 
 test "manifest round trip" {

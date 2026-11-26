@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! bzip2 decompression: the format of bzip2 1.0.x (`.bz2` files).
 //!
 //! A stream is the magic `BZh1`..`BZh9` (the digit is the block size in units

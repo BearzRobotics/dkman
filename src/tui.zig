@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! The page browser behind `dkman -b`: a search box with the matching pages
 //! on the left and a preview of the selected page on the right. It needs no
 //! other program; the terminal is driven with plain escape sequences.
@@ -533,7 +534,7 @@ const Tui = struct {
         const q_cols = charCount(charPrefix(t.query.items, lw -| 3));
         try t.goto(0, 2 + q_cols);
         try t.out.appendSlice(gpa, "\x1b[?25h");
-        try Io.File.stdout().writeStreamingAll(t.io, t.out.items);
+        try console.stdout().writeStreamingAll(t.io, t.out.items);
     }
 
     fn updateSize(t: *Tui) bool {
@@ -547,8 +548,8 @@ const Tui = struct {
 /// Runs the browser over `pages` (sorted as they should be listed). Returns
 /// the chosen page, or null when the user leaves without choosing.
 pub fn run(gpa: Allocator, io: Io, dirs: []const []const u8, pages: []const paths.Page, opts: Options) !?Result {
-    const stdin_tty = Io.File.stdin().isTty(io) catch false;
-    const stdout_tty = Io.File.stdout().isTty(io) catch false;
+    const stdin_tty = console.stdin().isTty(io) catch false;
+    const stdout_tty = console.stdout().isTty(io) catch false;
     if (!stdin_tty or !stdout_tty) return error.NotATerminal;
 
     var hay = try gpa.alloc([]u8, pages.len);
@@ -587,8 +588,8 @@ pub fn run(gpa: Allocator, io: Io, dirs: []const []const u8, pages: []const path
 
     const raw = try RawMode.enter();
     defer raw.leave();
-    try Io.File.stdout().writeStreamingAll(io, "\x1b[?1049h");
-    defer Io.File.stdout().writeStreamingAll(io, "\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
+    try console.stdout().writeStreamingAll(io, "\x1b[?1049h");
+    defer console.stdout().writeStreamingAll(io, "\x1b[0m\x1b[?25h\x1b[?1049l") catch {};
 
     var dirty = true;
     var shown_for: ?u32 = null;

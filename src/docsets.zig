@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! The documentation sets `dkman --fetch-docs` can install: Microsoft's
 //! documentation repositories (github.com/MicrosoftDocs), which are Markdown
 //! files. A set picks pages out of one repository by path and gives each a

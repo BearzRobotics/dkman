@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! dkman build script. `zig build` builds the program, `zig build test` runs the tests.
 
 const std = @import("std");
@@ -14,6 +15,9 @@ pub fn build(b: *std.Build) void {
     const regex_dep = b.dependency("regex", .{ .target = target, .optimize = optimize });
 
     const gtroff_dep = b.dependency("gtroff", .{ .target = target, .optimize = optimize });
+
+    // The built-in pager. The program alone imports it, not the library.
+    const util_core_dep = b.dependency("util_core", .{ .target = target, .optimize = optimize });
 
     // The library: `b.dependency("dkman", .{}).module("dkman")`. It brings md
     // and gtroff along, so a consumer needs no other imports for rendering.
@@ -34,6 +38,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "build_options", .module = options.createModule() },
+            .{ .name = "util_core", .module = util_core_dep.module("util_core") },
             .{ .name = "md", .module = md_dep.module("md") },
             .{ .name = "gtroff", .module = gtroff_dep.module("gtroff") },
             .{ .name = "regex", .module = regex_dep.module("regex") },

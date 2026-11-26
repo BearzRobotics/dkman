@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Deciding how a page file is written.
 
 const std = @import("std");

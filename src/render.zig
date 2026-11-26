@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Turning a page into terminal text. One renderer for every format: the
 //! readers build an `md.Node` tree and md-zig writes the text.
 

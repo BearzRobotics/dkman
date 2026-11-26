@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Shell wildcards for `-k --wildcard` and `-f --wildcard`. Regular
 //! expressions come from the regex-zig package.
 

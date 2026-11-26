@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! dkman: find, search and show manual pages and Markdown documents.
 
 const std = @import("std");
@@ -46,7 +47,7 @@ const usage =
     \\  --list-docs      list the documentation sets that can be downloaded, and which are
     \\  --fetch-docs SET...  download documentation sets from Microsoft's GitHub (or `all`)
     \\  -L, --locale L   language of the pages (default from LC_ALL, LC_MESSAGES, LANG)
-    \\  -P, --pager CMD  pager command (default: $MANPAGER, $PAGER, less; more on Windows)
+    \\  -P, --pager CMD  pager command (default: $MANPAGER, $PAGER, then the built-in one)
     \\  --width N        wrap at N columns (default: $MANWIDTH, $COLUMNS, the terminal, 80)
     \\  --nj             do not justify the text (right margin ragged)
     \\  --ascii          ASCII characters only (default unless the locale is UTF-8)
@@ -344,7 +345,8 @@ const Ctx = struct {
     /// Page names are compared ignoring case (man-db's default; -I turns it off).
     ignore_case: bool,
     use_pager: bool,
-    pager_cmd: []const u8,
+    /// The configured pager; null for the built-in one.
+    pager_cmd: ?[]const u8,
     /// Where the page index is kept, system-wide first (read first, written first
     /// when possible), then the user's.
     cache_files: []const []const u8,
@@ -370,7 +372,7 @@ fn run(init: std.process.Init) !u8 {
 
     var cfg = parseArgs(arena, args) catch |err| switch (err) {
         error.Usage => {
-            try Io.File.stderr().writeStreamingAll(io, usage);
+            try console.stderr().writeStreamingAll(io, usage);
             return exit_usage;
         },
         error.Unsupported => {
@@ -385,7 +387,7 @@ fn run(init: std.process.Init) !u8 {
         return 0;
     }
 
-    const stdout_tty = Io.File.stdout().isTty(io) catch false;
+    const stdout_tty = console.stdout().isTty(io) catch false;
     const no_color_env = if (env.get("NO_COLOR")) |v| v.len > 0 else false;
     // On Windows the console must be told to understand ANSI styles and UTF-8;
     // an old console that cannot gets plain text.
@@ -465,7 +467,7 @@ fn run(init: std.process.Init) !u8 {
         .opts = opts,
         .ignore_case = !cfg.match_case,
         .use_pager = cfg.pager and stdout_tty and !cfg.html,
-        .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")) orelse platform.default_pager,
+        .pager_cmd = cfg.pager_cmd orelse nonEmpty(env.get("MANPAGER")) orelse nonEmpty(env.get("PAGER")),
         .cache_files = try cacheFiles(arena, io, env, dirs, loose, docs_dir),
         .loose = loose,
     };
@@ -741,7 +743,7 @@ fn describePages(ctx: Ctx, pages: []const paths.Page) ![]const []const u8 {
 // ----------------------------------------------------------------- helpers
 
 fn usageError(io: Io) !u8 {
-    try Io.File.stderr().writeStreamingAll(io, usage);
+    try console.stderr().writeStreamingAll(io, usage);
     return exit_usage;
 }
 
@@ -916,7 +918,7 @@ fn printLine(io: Io, s: []const u8) !void {
 fn diag(io: Io, comptime fmt: []const u8, args: anytype) !void {
     var buf: [512]u8 = undefined;
     const msg = std.fmt.bufPrint(&buf, fmt, args) catch &buf;
-    try Io.File.stderr().writeStreamingAll(io, msg);
+    try console.stderr().writeStreamingAll(io, msg);
 }
 
 /// Loads and renders one file (`-` is standard input). Returns null after

@@ -3,7 +3,7 @@
 A manual page tool in Zig, meant to replace man(1): finds pages in the traditional
 directories (gzip, xz, zstd, bzip2 and lzma compressed too, all decoded in process), answers `-f` (whatis) and
 `-k` (apropos) from a cached index of the NAME lines, searches pages in a built-in
-browser (`-b`: search box and preview), and shows them through a pager. Markdown documents
+browser (`-b`: search box and preview), and shows them in a built-in pager. Markdown documents
 (`name.1.md`) are first-class pages, read with
 [md-zig](https://github.com/BearzRobotics/md-zig).
 
@@ -45,5 +45,14 @@ Teams, SharePoint, Sysinternals, WSL and the Win32 API. Man pages of Git for Win
 Cygwin, Scoop and rustup are found without configuration. See `docs/decisions/0003-windows-and-docs.md`.
 
 See `docs/manpages/dkman.1.md` for the options, `docs/architecture.md` for the
-layout and `docs/decisions/` for the reasoning. Zig 0.17.1. `test/tools/cli.sh` checks the command line. Dependencies (md-zig, gtroff-zig, regex-zig) are fetched
-by `zig build` from their GitHub releases. License: MIT.
+layout and `docs/decisions/` for the reasoning. Zig 0.17.1. `test/tools/cli.sh` checks the command line. Dependencies (md-zig, gtroff-zig, regex-zig, util-core) are fetched
+by `zig build` from their GitHub releases.
+
+## License
+
+Copyright (c) 2026 Dakota James Owen Keeler.
+
+dkman, both the program and the library, is free software under the GNU General
+Public License, version 2 or (at your option) any later version
+(`GPL-2.0-or-later`). It comes with no warranty. See `LICENSE`. Releases up to
+0.6.0 were published under the MIT License.

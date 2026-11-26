@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! Loading one page for display: read the file (or standard input), follow
 //! `.so` redirects, and say how it is written.
 
@@ -8,6 +9,7 @@ const paths = @import("paths.zig");
 const source = @import("source.zig");
 const format = @import("format.zig");
 const render = @import("render.zig");
+const console = @import("console.zig");
 
 pub const Loaded = struct {
     /// The page text, owned by the caller (allocated with the `gpa` given to `load`).
@@ -47,7 +49,7 @@ pub fn load(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, 
 fn read(gpa: Allocator, io: Io, path: []const u8) source.Error![]u8 {
     if (std.mem.eql(u8, path, "-")) {
         var buf: [4096]u8 = undefined;
-        var r = Io.File.stdin().reader(io, &buf);
+        var r = console.stdin().reader(io, &buf);
         return r.interface.allocRemaining(gpa, .limited(source.max_bytes)) catch |err| switch (err) {
             error.StreamTooLong => error.PageTooLarge,
             error.OutOfMemory => error.OutOfMemory,

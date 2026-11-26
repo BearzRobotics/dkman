@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! A color theme for rendered pages.
 //!
 //! md-zig writes terminal text with only bold, italic, underline and two

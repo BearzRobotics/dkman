@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 //! One-line descriptions of pages (the NAME section), for `-f` (whatis) and
 //! `-k` (apropos), and a cache of them so that listing is quick.
 //!
@@ -16,6 +17,7 @@ const page_mod = @import("page.zig");
 const render = @import("render.zig");
 const regex = @import("regex");
 const glob = @import("glob.zig");
+const console = @import("console.zig");
 
 pub const Entry = struct {
     /// The name the page is listed under.
@@ -339,7 +341,7 @@ fn pickEntry(arena: Allocator, lines: []const u8, file_name: []const u8, all_nam
 /// keeps its own entries (`set_index_name`), so it is read once, not at every
 /// rebuild. `gpa` owns the result's text.
 pub fn build(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, loose: ?Loose) Allocator.Error![]Entry {
-    var progress: Progress = .{ .io = io, .tty = Io.File.stderr().isTty(io) catch false };
+    var progress: Progress = .{ .io = io, .tty = console.stderr().isTty(io) catch false };
     var out: std.ArrayList(Entry) = .empty;
     for (dirs) |dir| {
         if (isDocSet(io, dir)) {
@@ -457,7 +459,7 @@ const Progress = struct {
     fn say(p: *Progress, comptime fmt: []const u8, args: anytype) void {
         var buf: [256]u8 = undefined;
         const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-        Io.File.stderr().writeStreamingAll(p.io, msg) catch {};
+        console.stderr().writeStreamingAll(p.io, msg) catch {};
     }
 };
 
@@ -627,7 +629,7 @@ pub fn load(gpa: Allocator, arena: Allocator, io: Io, dirs: []const []const u8, 
             if (try parseIndex(arena, text, print)) |entries| return .{ .entries = entries };
         } else |_| {}
     };
-    if (notice) |msg| Io.File.stderr().writeStreamingAll(io, msg) catch {};
+    if (notice) |msg| console.stderr().writeStreamingAll(io, msg) catch {};
     const entries = try build(gpa, arena, io, dirs, loose);
     if (cache_files.len == 0) return .{ .entries = entries };
     // Taken again: writing a set's own index changed its directory's time.
