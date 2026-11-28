@@ -344,10 +344,9 @@ not found, similar names are suggested on standard error (`Did you mean: ...`).
   groff's, but words are never hyphenated (groff's hyphenation patterns are
   not part of dkman), so some lines break differently. `--nj` leaves the right
   margin ragged.
-- Regular expressions are POSIX extended (regex-zig 0.1.0), but the engine is
-  leftmost-first and lacks `\<`, `\>` and `[[.x.]]`; as dkman only asks whether a
-  word matches, this makes no difference to the results. `-K` matches text, not
-  expressions.
+- Regular expressions are POSIX extended (regex-zig). Collating symbols and
+  equivalence classes (`[[.x.]]`, `[[=x=]]`) are not supported: a word using
+  them is searched for as plain text. `-K` matches text, not expressions.
 - Pages are not cached as `cat` pages and `mandb` databases are not read: dkman
   keeps its own index, built from the NAME sections. It agrees with man-db's
   `whatis` on most pages (142 of 150 sampled names on one machine, the rest
